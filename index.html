@@ -25,7 +25,7 @@ h1 { font-size: 36px; margin-bottom: 8px; }
     padding: 22px;
     margin-bottom: 20px;
 }
-input {
+input, select {
     width: 100%;
     padding: 14px;
     border-radius: 7px;
@@ -35,6 +35,7 @@ input {
     font-size: 16px;
     margin: 10px 0;
 }
+select { cursor: pointer; }
 button {
     width: 100%;
     padding: 14px;
@@ -108,6 +109,14 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
     <h2>Analyze a Chess.com player</h2>
     <label for="username">Chess.com username</label>
     <input id="username" value="rmcarroll604" placeholder="Enter Chess.com username">
+
+    <label for="timeClass">Time control</label>
+    <select id="timeClass">
+        <option value="rapid" selected>Rapid</option>
+        <option value="blitz">Blitz</option>
+        <option value="bullet">Bullet</option>
+    </select>
+
     <button id="analyzeBtn" onclick="analyzePlayer()">Analyze Player</button>
     <div id="status" class="status">Enter a public Chess.com username to get started.</div>
 </div>
@@ -178,6 +187,12 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 const API = "https://api.chess.com/pub";
 const GAME_LIMIT = 100;
 
+const TIME_CLASS_NAMES = {
+    rapid: "Rapid",
+    blitz: "Blitz",
+    bullet: "Bullet"
+};
+
 function setStatus(message, isError = false) {
     const el = document.getElementById("status");
     el.textContent = message;
@@ -223,14 +238,14 @@ async function getArchive(url) {
     return data.games || [];
 }
 
-function convertGame(game, username) {
+function convertGame(game, username, timeClass) {
     if (!game.white || !game.black) return null;
 
     const isWhite = game.white.username.toLowerCase() === username.toLowerCase();
     const player = isWhite ? game.white : game.black;
     const opponent = isWhite ? game.black : game.white;
 
-    if (game.time_class !== "rapid" || game.rules !== "chess" || game.rated !== true) return null;
+    if (game.time_class !== timeClass || game.rules !== "chess" || game.rated !== true) return null;
 
     let result;
     let score;
@@ -301,12 +316,14 @@ async function analyzePlayer() {
     }
 
     const username = usernameInput.toLowerCase();
+    const timeClass = document.getElementById("timeClass").value;
+    const timeClassName = TIME_CLASS_NAMES[timeClass];
     const button = document.getElementById("analyzeBtn");
     button.disabled = true;
     document.getElementById("results").style.display = "none";
 
     try {
-        setStatus("Finding player game archives...");
+        setStatus("Finding " + timeClassName.toLowerCase() + " game archives...");
         const archiveData = await getJSON(
             API + "/player/" + encodeURIComponent(username) + "/games/archives"
         );
@@ -318,8 +335,9 @@ async function analyzePlayer() {
 
         // Download recent monthly archives in small batches.
         for (let i = 0; i < archives.length && games.length < GAME_LIMIT; i += 3) {
-            setStatus("Downloading game history... " + Math.min(i + 3, archives.length) +
-                " of " + archives.length + " archive months checked.");
+            setStatus("Downloading " + timeClassName.toLowerCase() + " game history... " +
+                Math.min(i + 3, archives.length) + " of " + archives.length +
+                " archive months checked.");
 
             const batch = archives.slice(i, i + 3);
             const batchResults = await Promise.all(batch.map(async url => {
@@ -333,7 +351,7 @@ async function analyzePlayer() {
 
             for (const monthGames of batchResults) {
                 for (const game of monthGames) {
-                    const converted = convertGame(game, username);
+                    const converted = convertGame(game, username, timeClass);
                     if (converted) games.push(converted);
                 }
             }
@@ -343,11 +361,13 @@ async function analyzePlayer() {
         games = games.slice(-GAME_LIMIT);
 
         if (!games.length) {
-            throw new Error("No rated rapid games were found for this player.");
+            throw new Error("No rated " + timeClassName.toLowerCase() +
+                " games were found for this player. Try another time control.");
         }
 
-        displayResults(usernameInput, games);
-        setStatus("Analysis complete. Found " + games.length + " rated rapid games.");
+        displayResults(usernameInput, games, timeClass);
+        setStatus("Analysis complete. Found " + games.length + " rated " +
+            timeClassName.toLowerCase() + " games.");
     } catch (error) {
         console.error(error);
         setStatus(error.message || "Something went wrong. Please try again.", true);
@@ -356,7 +376,7 @@ async function analyzePlayer() {
     }
 }
 
-function displayResults(username, games) {
+function displayResults(username, games, timeClass) {
     const wins = games.filter(g => g.result === "Win").length;
     const draws = games.filter(g => g.result === "Draw").length;
     const losses = games.filter(g => g.result === "Loss").length;
@@ -368,11 +388,19 @@ function displayResults(username, games) {
     const shortRatings = rollingRatings(games, shortWindow);
     const values = mainRatings.map(r => r.rating);
 
-    document.getElementById("playerTitle").textContent = username + " — Analysis";
+    const timeClassName = TIME_CLASS_NAMES[timeClass];
+    document.getElementById("playerTitle").textContent =
+        username + " — " + timeClassName + " Analysis";
+
+    const windowNote = games.length < 20
+        ? " Only " + games.length + " games were available, so the main performance range uses " +
+          games.length + "-game window" + (games.length === 1 ? "" : "s") + " instead of 20-game windows."
+        : " Performance range uses rolling 20-game windows.";
+
     document.getElementById("gameCount").textContent =
-        "Based on " + games.length + " recent rated rapid games · " +
-        games[0].date.toLocaleDateString() + " to " +
-        games[games.length - 1].date.toLocaleDateString();
+        "Based on " + games.length + " recent rated " + timeClassName.toLowerCase() +
+        " games · " + games[0].date.toLocaleDateString() + " to " +
+        games[games.length - 1].date.toLocaleDateString() + "." + windowNote;
 
     document.getElementById("floor").textContent = Math.round(percentile(values, 0.20));
     document.getElementById("typical").textContent = Math.round(percentile(values, 0.50));
