@@ -356,7 +356,7 @@ function createStockfishWorker() {
             reject(new Error("Stockfish timed out while loading. Try refreshing the page or allowing cdn.jsdelivr.net and unpkg.com."));
         }, 45000);
 
-        const wrapper = String.raw\`
+        const wrapper = String.raw`
             let engineBase = "https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/";
             var Module = {
                 locateFile: function(path) {
@@ -374,7 +374,7 @@ function createStockfishWorker() {
                     postMessage("ENGINE_LOAD_ERROR: " + secondError.message);
                 }
             }
-        \`;
+        `;
         try {
             const blob = new Blob([wrapper], { type: "text/javascript" });
             stockfishWorker = new Worker(URL.createObjectURL(blob));
@@ -585,7 +585,7 @@ async function analyzeChessQuality() {
     }
 }
 
-async function analyzePlayer() {
+async async function analyzePlayer() {
     const usernameInput = document.getElementById("username").value.trim();
     if (!usernameInput) {
         setStatus("Please enter a Chess.com username.", true);
