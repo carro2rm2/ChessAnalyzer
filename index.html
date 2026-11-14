@@ -70,6 +70,41 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
     .metric strong { font-size: 22px; }
     th, td { font-size: 12px; }
 }
+
+.move-review-panel { margin-top: 20px; }
+.review-controls { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: end; }
+.review-controls select { margin: 0; }
+.review-controls button, .move-nav button { width: auto; padding: 11px 15px; }
+.review-note { color: #aab7c4; font-size: 13px; line-height: 1.5; }
+.review-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 14px 0; }
+.review-stat { background: #263747; border-radius: 8px; padding: 12px 6px; text-align: center; }
+.review-stat strong { display: block; font-size: 22px; }
+.review-stat small { color: #b8c7d5; font-size: 11px; }
+.board-wrap { display: flex; justify-content: center; margin: 16px 0; }
+.chess-board { width: min(100%, 430px); aspect-ratio: 1; display: grid; grid-template-columns: repeat(8, 1fr); border: 4px solid #526477; border-radius: 4px; overflow: hidden; }
+.square { display: flex; align-items: center; justify-content: center; font-family: "Arial Unicode MS", "Segoe UI Symbol", serif; font-size: clamp(22px, 5.6vw, 42px); line-height: 1; }
+.square.light { background: #e6dfce; color: #17212b; }
+.square.dark { background: #78917d; color: #101820; }
+.move-nav { display: flex; justify-content: center; gap: 8px; margin: 10px 0 16px; }
+.move-nav button { background: #34495c; }
+.move-nav button:hover { background: #49647c; }
+.position-label { text-align: center; color: #b8c7d5; font-size: 13px; }
+.move-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; max-height: 330px; overflow-y: auto; margin-top: 12px; }
+.move-card { border: 1px solid #344454; background: #17232e; color: #f1f5f9; border-radius: 7px; padding: 9px; text-align: left; cursor: pointer; font-size: 13px; }
+.move-card.active { border-color: #65d6a3; background: #244337; }
+.move-card .move-title { display: block; font-weight: bold; margin-bottom: 4px; }
+.move-card .move-detail { display: block; color: #b8c7d5; font-size: 11px; line-height: 1.4; }
+.event-list { margin: 10px 0 0; padding-left: 20px; color: #d7e0e8; font-size: 13px; line-height: 1.6; }
+.aggregate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.aggregate-grid div { background: #263747; border-radius: 8px; padding: 12px; }
+.aggregate-grid strong { display: block; font-size: 20px; }
+@media(max-width: 550px) {
+ .review-controls { grid-template-columns: 1fr 1fr; }
+ .review-controls select { grid-column: 1 / -1; }
+ .review-summary { grid-template-columns: repeat(3, 1fr); }
+ .move-list { grid-template-columns: 1fr; }
+}
+
 </style>
 </head>
 <body>
@@ -164,6 +199,42 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
         </div>
     </div>
 
+
+    <div class="panel move-review-panel">
+        <h2>Move-by-move review</h2>
+        <p class="review-note">Choose a recent game to replay it one move at a time. The review identifies observable events—captures, checks, castling, promotions, and pieces exposed to legal captures. It does not claim to know the engine's best move.</p>
+        <div class="review-controls">
+            <select id="reviewGame" aria-label="Choose a game"></select>
+            <button id="loadReviewBtn" type="button" onclick="loadSelectedReview()">Review game</button>
+            <button id="openGameBtn" type="button" onclick="openSelectedGame()">Chess.com</button>
+        </div>
+        <p id="reviewStatus" class="status">Analyze a player to load games for review.</p>
+        <div id="reviewContent" style="display:none">
+            <div class="board-wrap"><div id="chessBoard" class="chess-board" aria-label="Chess board"></div></div>
+            <div id="positionLabel" class="position-label"></div>
+            <div class="move-nav">
+                <button type="button" onclick="stepReview(-1)">← Previous</button>
+                <button type="button" onclick="stepReview(1)">Next →</button>
+            </div>
+            <h3 id="moveHeading">Move details</h3>
+            <p id="moveExplanation" class="review-note"></p>
+            <ul id="moveEvents" class="event-list"></ul>
+            <h3>Game moves</h3>
+            <div id="moveList" class="move-list"></div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Patterns across these games</h2>
+        <p class="review-note">These totals summarize recorded move events across the loaded sample. They describe what happened, not whether a move was objectively strong.</p>
+        <div id="aggregateStats" class="aggregate-grid">
+            <div><strong>—</strong><span class="muted">Games parsed</span></div>
+            <div><strong>—</strong><span class="muted">Moves reviewed</span></div>
+            <div><strong>—</strong><span class="muted">Captures</span></div>
+        </div>
+        <p id="aggregateExplanation" class="review-note"></p>
+    </div>
+
     <div class="panel">
         <h2>How to interpret this</h2>
         <p><strong>Floor:</strong> The 20th percentile of rolling performance ratings. It represents a lower typical stretch, not a guaranteed minimum.</p>
@@ -178,6 +249,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 <footer>ChessAnalyzer · Uses Chess.com's public Published Data API</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <script>
 const API = "https://api.chess.com/pub";
 const GAME_LIMIT = 100;
@@ -374,6 +446,218 @@ async function analyzePlayer() {
     }
 }
 
+
+let currentReview = null;
+let currentReviewPly = 0;
+let loadedGames = [];
+
+const PIECE_SYMBOLS = {
+    wp: "♙", wn: "♘", wb: "♗", wr: "♖", wq: "♕", wk: "♔",
+    bp: "♟", bn: "♞", bb: "♝", br: "♜", bq: "♛", bk: "♚"
+};
+const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+
+function parseGameForReview(pgn) {
+    if (!window.Chess || !pgn) return null;
+    try {
+        const game = new Chess();
+        if (!game.load_pgn(pgn, { sloppy: true })) return null;
+        const history = game.history({ verbose: true });
+        const replay = new Chess();
+        const positions = [replay.fen()];
+        const details = [];
+        let captures = 0, checks = 0, castles = 0, promotions = 0, exposed = 0;
+
+        history.forEach((move, index) => {
+            const legalBefore = replay.moves({ verbose: true });
+            const otherCaptures = legalBefore.filter(m => m.captured && m.san !== move.san);
+            replay.move(move.san);
+            const events = [];
+            if (move.captured) {
+                captures++;
+                events.push("Capture: took a " + pieceName(move.captured) + ".");
+            }
+            if (move.flags && (move.flags.includes("k") || move.flags.includes("q"))) {
+                castles++;
+                events.push("Castled, moving the king toward safety and connecting the rooks.");
+            }
+            if (move.promotion) {
+                promotions++;
+                events.push("Pawn promoted to a " + pieceName(move.promotion) + ".");
+            }
+            if (replay.in_checkmate()) {
+                checks++;
+                events.push("Checkmate. The game is over.");
+            } else if (replay.in_check()) {
+                checks++;
+                events.push("Check. The opponent's king is under attack.");
+            }
+            const nextCaptures = replay.moves({ verbose: true }).filter(m => m.captured && m.to === move.to);
+            if (nextCaptures.length && !replay.game_over()) {
+                exposed++;
+                events.push("The piece that just moved can currently be captured on " + move.to + ". Check whether it is defended or whether the capture would be tactically unsafe.");
+            }
+            if (otherCaptures.length && !move.captured && !replay.game_over()) {
+                const candidates = otherCaptures.slice(0, 3).map(m => m.san);
+                events.push("Other legal captures were available before this move: " + candidates.join(", ") + (otherCaptures.length > 3 ? "…" : "") + ". They are candidates to inspect, not automatically missed wins.");
+            }
+            if (!events.length) events.push("No special event detected by this basic review. That does not mean the move was good or bad.");
+            details.push({
+                number: Math.floor(index / 2) + 1,
+                color: move.color === "w" ? "White" : "Black",
+                san: move.san,
+                from: move.from,
+                to: move.to,
+                piece: move.piece,
+                events,
+                fen: replay.fen()
+            });
+            positions.push(replay.fen());
+        });
+        return { history, details, positions, totals: { moves: history.length, captures, checks, castles, promotions, exposed } };
+    } catch (error) {
+        console.warn("Could not parse PGN for move review:", error);
+        return null;
+    }
+}
+
+function pieceName(piece) {
+    return ({ p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king" })[piece] || piece;
+}
+
+function buildMoveReview(games) {
+    loadedGames = games.filter(g => g.pgn);
+    const select = document.getElementById("reviewGame");
+    select.innerHTML = "";
+    loadedGames.slice().reverse().forEach((g, index) => {
+        const option = document.createElement("option");
+        option.value = String(loadedGames.length - 1 - index);
+        option.textContent = g.date.toLocaleDateString() + " · " + g.color + " vs " + g.opponent +
+            " (" + g.result + ")";
+        select.appendChild(option);
+    });
+    const parsed = loadedGames.map(g => parseGameForReview(g.pgn)).filter(Boolean);
+    const totals = parsed.reduce((a, item) => {
+        Object.keys(a).forEach(k => a[k] += item.totals[k]);
+        return a;
+    }, { moves: 0, captures: 0, checks: 0, castles: 0, promotions: 0, exposed: 0 });
+    document.getElementById("aggregateStats").innerHTML = "";
+    [
+        [parsed.length, "Games parsed"],
+        [totals.moves.toLocaleString(), "Moves reviewed"],
+        [totals.captures.toLocaleString(), "Captures"],
+        [totals.checks.toLocaleString(), "Checks"],
+        [totals.exposed.toLocaleString(), "Pieces exposed to capture"],
+        [totals.castles.toLocaleString(), "Castles"]
+    ].forEach(([value, label]) => {
+        const box = document.createElement("div");
+        const strong = document.createElement("strong");
+        const span = document.createElement("span");
+        strong.textContent = value;
+        span.className = "muted";
+        span.textContent = label;
+        box.append(strong, span);
+        document.getElementById("aggregateStats").appendChild(box);
+    });
+    document.getElementById("aggregateExplanation").textContent =
+        "Parsed " + parsed.length + " of " + loadedGames.length +
+        " available PGNs. A piece exposed to capture is only a review flag; it may be defended or tactically poisoned. " +
+        "Move counts are descriptive, not accuracy scores.";
+    document.getElementById("reviewStatus").textContent = loadedGames.length
+        ? "Found PGNs for " + loadedGames.length + " of " + games.length + " loaded games."
+        : "No PGN move scores were included in the returned game data.";
+    if (loadedGames.length) loadSelectedReview();
+    else document.getElementById("reviewContent").style.display = "none";
+}
+
+function loadSelectedReview() {
+    const index = Number(document.getElementById("reviewGame").value);
+    const game = loadedGames[index];
+    if (!game) return;
+    currentReview = parseGameForReview(game.pgn);
+    currentReviewPly = 0;
+    if (!currentReview) {
+        document.getElementById("reviewStatus").textContent =
+            "This game's PGN could not be parsed. Try another game.";
+        document.getElementById("reviewContent").style.display = "none";
+        return;
+    }
+    document.getElementById("reviewContent").style.display = "block";
+    document.getElementById("reviewStatus").textContent =
+        "Reviewing " + game.color + " vs " + game.opponent + " · " + game.result +
+        " · " + currentReview.details.length + " half-moves.";
+    renderReviewPosition();
+}
+
+function openSelectedGame() {
+    const index = Number(document.getElementById("reviewGame").value);
+    const game = loadedGames[index];
+    if (game && game.gameUrl) window.open(game.gameUrl, "_blank", "noopener");
+}
+
+function stepReview(amount) {
+    if (!currentReview) return;
+    currentReviewPly = Math.max(0, Math.min(currentReview.details.length, currentReviewPly + amount));
+    renderReviewPosition();
+}
+
+function renderReviewPosition() {
+    if (!currentReview) return;
+    const fen = currentReview.positions[currentReviewPly];
+    const board = new Chess(fen).board();
+    const boardEl = document.getElementById("chessBoard");
+    boardEl.innerHTML = "";
+    board.forEach((rank, row) => rank.forEach((piece, col) => {
+        const square = document.createElement("div");
+        square.className = "square " + ((row + col) % 2 === 0 ? "light" : "dark");
+        square.textContent = piece ? PIECE_SYMBOLS[piece.color + piece.type] : "";
+        boardEl.appendChild(square);
+    }));
+    document.getElementById("positionLabel").textContent =
+        currentReviewPly === 0 ? "Starting position" :
+        "After " + currentReview.details[currentReviewPly - 1].color.toLowerCase() +
+        " move " + currentReview.details[currentReviewPly - 1].number;
+    if (currentReviewPly === 0) {
+        document.getElementById("moveHeading").textContent = "Starting position";
+        document.getElementById("moveExplanation").textContent = "Use Next to step through the game.";
+        document.getElementById("moveEvents").innerHTML = "";
+    } else {
+        const detail = currentReview.details[currentReviewPly - 1];
+        document.getElementById("moveHeading").textContent =
+            detail.number + (detail.color === "White" ? "." : "...") + " " + detail.san +
+            " · " + detail.color;
+        document.getElementById("moveExplanation").textContent =
+            "Moved " + pieceName(detail.piece) + " from " + detail.from + " to " + detail.to + ".";
+        const list = document.getElementById("moveEvents");
+        list.innerHTML = "";
+        detail.events.forEach(event => {
+            const li = document.createElement("li");
+            li.textContent = event;
+            list.appendChild(li);
+        });
+    }
+    const moveList = document.getElementById("moveList");
+    moveList.innerHTML = "";
+    currentReview.details.forEach((detail, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "move-card" + (index + 1 === currentReviewPly ? " active" : "");
+        const title = document.createElement("span");
+        title.className = "move-title";
+        title.textContent = detail.number + (detail.color === "White" ? "." : "...") + " " + detail.san;
+        const summary = document.createElement("span");
+        summary.className = "move-detail";
+        summary.textContent = detail.events[0];
+        button.append(title, summary);
+        button.addEventListener("click", () => {
+            currentReviewPly = index + 1;
+            renderReviewPosition();
+        });
+        moveList.appendChild(button);
+    });
+    moveList.scrollTop = Math.max(0, (currentReviewPly - 1) * 46 - 100);
+}
+
 function displayResults(username, games, timeClass) {
     const wins = games.filter(g => g.result === "Win").length;
     const draws = games.filter(g => g.result === "Draw").length;
@@ -488,6 +772,7 @@ function displayResults(username, games, timeClass) {
     });
 
     document.getElementById("results").style.display = "block";
+    buildMoveReview(games);
 }
 </script>
 </body>
