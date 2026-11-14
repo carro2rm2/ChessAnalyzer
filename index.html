@@ -105,6 +105,25 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
  .move-list { grid-template-columns: 1fr; }
 }
 
+
+.predictor-panel { border: 1px solid #397b68; }
+.matchup-inputs { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.matchup-inputs label { display:block; color:#c7d3df; font-size:14px; }
+.matchup-inputs input, .matchup-inputs select { margin:7px 0 12px; }
+.predictor-results { display:none; margin-top:18px; }
+.probability-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:15px 0; }
+.probability { background:#263747; border-radius:9px; padding:15px 8px; text-align:center; }
+.probability strong { display:block; font-size:28px; }
+.probability small { color:#b8c7d5; }
+.matchup-bars { height:14px; display:flex; overflow:hidden; border-radius:8px; background:#344454; margin:12px 0; }
+.matchup-bars span { display:block; height:100%; }
+.prob-a { background:#65d6a3; } .prob-d { background:#f3bd63; } .prob-b { background:#76baff; }
+.comparison-table { width:100%; border-collapse:collapse; margin-top:12px; }
+.comparison-table th,.comparison-table td { padding:9px 6px; border-bottom:1px solid #344454; text-align:center; }
+.comparison-table th:first-child,.comparison-table td:first-child { text-align:left; }
+.prediction-note { color:#b8c7d5; font-size:13px; line-height:1.55; }
+@media(max-width:550px) { .matchup-inputs {grid-template-columns:1fr;} .probability-grid {gap:6px;} .probability strong {font-size:22px;} }
+
 </style>
 </head>
 <body>
@@ -128,6 +147,40 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 
     <button id="analyzeBtn" onclick="analyzePlayer()">Analyze Player</button>
     <div id="status" class="status">Enter a public Chess.com username to get started.</div>
+</div>
+
+
+<div class="panel predictor-panel">
+    <h2>Head-to-head predictor</h2>
+    <p class="review-note">Compare two public Chess.com players and estimate the chance of a win or draw using recent performance, consistency, trends, and observable move patterns.</p>
+    <div class="matchup-inputs">
+        <div><label for="predictorA">Player 1 username</label><input id="predictorA" value="rmcarroll604" placeholder="Chess.com username"></div>
+        <div><label for="predictorB">Player 2 username</label><input id="predictorB" placeholder="Opponent username"></div>
+    </div>
+    <label for="predictorTimeClass">Time control</label>
+    <select id="predictorTimeClass">
+        <option value="rapid" selected>Rapid</option><option value="blitz">Blitz</option><option value="bullet">Bullet</option>
+    </select>
+    <button id="predictBtn" type="button" onclick="predictMatchup()">Predict matchup</button>
+    <p id="predictStatus" class="status">Enter two Chess.com usernames to compare their recent games.</p>
+    <div id="predictorResults" class="predictor-results">
+        <h3 id="predictionHeadline"></h3>
+        <div class="probability-grid">
+            <div class="probability"><strong id="probA">—</strong><small id="probALabel">Player 1 win</small></div>
+            <div class="probability"><strong id="probDraw">—</strong><small>Draw</small></div>
+            <div class="probability"><strong id="probB">—</strong><small id="probBLabel">Player 2 win</small></div>
+        </div>
+        <div class="matchup-bars"><span id="barA" class="prob-a"></span><span id="barDraw" class="prob-d"></span><span id="barB" class="prob-b"></span></div>
+        <p id="predictionSummary" class="prediction-note"></p>
+        <h3>What is driving the prediction?</h3>
+        <div style="overflow-x:auto">
+        <table class="comparison-table">
+            <thead><tr><th>Measure</th><th id="tablePlayerA">Player 1</th><th id="tablePlayerB">Player 2</th></tr></thead>
+            <tbody id="comparisonRows"></tbody>
+        </table>
+        </div>
+        <p id="predictionCaveat" class="prediction-note"></p>
+    </div>
 </div>
 
 <div id="results" class="results">
@@ -666,6 +719,137 @@ function renderReviewPosition() {
         moveList.appendChild(button);
     });
     moveList.scrollTop = Math.max(0, (currentReviewPly - 1) * 46 - 100);
+}
+
+
+async function fetchPredictorGames(username, timeClass) {
+    const archiveData = await getJSON(API + "/player/" + encodeURIComponent(username) + "/games/archives");
+    const archives = (archiveData.archives || []).slice().reverse();
+    if (!archives.length) throw new Error("No game archives found for " + username + ".");
+    let games = [];
+    for (let i = 0; i < archives.length && games.length < GAME_LIMIT; i += 3) {
+        const batch = archives.slice(i, i + 3);
+        const batches = await Promise.all(batch.map(async url => {
+            try { return await getArchive(url); } catch (e) { return []; }
+        }));
+        for (const monthGames of batches) {
+            for (const game of monthGames) {
+                const converted = convertGame(game, username, timeClass);
+                if (converted) games.push(converted);
+            }
+        }
+    }
+    games.sort((a,b) => a.timestamp - b.timestamp);
+    return games.slice(-GAME_LIMIT);
+}
+
+function predictorStats(games) {
+    const n = games.length;
+    const ratings20 = rollingRatings(games, Math.min(20,n));
+    const ratings10 = rollingRatings(games, Math.min(10,n));
+    const currentRating = games[n-1].playerRating;
+    const typical = ratings20.length ? percentile(ratings20.map(x=>x.rating),.5) : currentRating;
+    const floor = ratings20.length ? percentile(ratings20.map(x=>x.rating),.2) : typical;
+    const ceiling = ratings20.length ? percentile(ratings20.map(x=>x.rating),.8) : typical;
+    const recent10 = ratings10.length ? ratings10[ratings10.length-1].rating : typical;
+    const recent20 = ratings20.length ? ratings20[ratings20.length-1].rating : typical;
+    const prior20 = n >= 40 ? performanceRating(games.slice(-40,-20)) : null;
+    const trend = prior20 === null ? null : recent20 - prior20;
+    const recentScoreGames = games.slice(-20);
+    const recentScore = recentScoreGames.reduce((s,g)=>s+g.score,0)/recentScoreGames.length;
+    let moves=0, checks=0, captures=0, exposed=0, parsed=0;
+    games.slice(-40).forEach(g => {
+        if (!g.pgn) return;
+        const review = parseGameForReview(g.pgn);
+        if (!review) return;
+        parsed++;
+        moves += review.totals.moves;
+        checks += review.totals.checks;
+        captures += review.totals.captures;
+        exposed += review.totals.exposed;
+    });
+    const movePatterns = moves ? {
+        checksPer20: checks / moves * 20,
+        capturesPer20: captures / moves * 20,
+        exposedPer20: exposed / moves * 20
+    } : null;
+    // A small, deliberately capped adjustment: captures contribute modestly;
+    // checks alone are not rewarded, and exposed pieces reduce the score.
+    const activityScore = movePatterns
+        ? Math.max(-12, Math.min(12, (movePatterns.capturesPer20 - 1.2) * 2 - movePatterns.exposedPer20 * 2))
+        : 0;
+    const strength = .45*recent20 + .20*recent10 + .20*currentRating + .10*floor + .05*ceiling
+        + (trend === null ? 0 : Math.max(-35,Math.min(35,trend*.12)))
+        + activityScore;
+    return { n,currentRating,typical,floor,ceiling,recent10,recent20,trend,recentScore,parsed,moves,movePatterns,strength };
+}
+
+function signed(value) { return (value > 0 ? "+" : "") + Math.round(value); }
+
+async function predictMatchup() {
+    const a = document.getElementById("predictorA").value.trim();
+    const b = document.getElementById("predictorB").value.trim();
+    const timeClass = document.getElementById("predictorTimeClass").value;
+    const status = document.getElementById("predictStatus");
+    const button = document.getElementById("predictBtn");
+    if (!a || !b) { status.textContent = "Enter both Chess.com usernames."; status.className="status error"; return; }
+    if (a.toLowerCase() === b.toLowerCase()) { status.textContent = "Enter two different usernames."; status.className="status error"; return; }
+    button.disabled = true;
+    document.getElementById("predictorResults").style.display = "none";
+    try {
+        status.className = "status";
+        status.textContent = "Loading " + a + "'s " + timeClass + " games...";
+        const gamesA = await fetchPredictorGames(a.toLowerCase(),timeClass);
+        status.textContent = "Loading " + b + "'s " + timeClass + " games...";
+        const gamesB = await fetchPredictorGames(b.toLowerCase(),timeClass);
+        if (!gamesA.length) throw new Error("No rated " + timeClass + " games found for " + a + ".");
+        if (!gamesB.length) throw new Error("No rated " + timeClass + " games found for " + b + ".");
+        status.textContent = "Comparing performance and move patterns...";
+        const A = predictorStats(gamesA), B = predictorStats(gamesB);
+        const difference = A.strength - B.strength;
+        const expectedScoreA = 1 / (1 + Math.pow(10,-difference/400));
+        const draw = .25 * Math.exp(-Math.abs(difference)/500);
+        const winA = Math.max(0,Math.min(1,expectedScoreA-draw/2));
+        const winB = 1-winA-draw;
+        const pct = x => (x*100).toFixed(1)+"%";
+        document.getElementById("probA").textContent=pct(winA);
+        document.getElementById("probDraw").textContent=pct(draw);
+        document.getElementById("probB").textContent=pct(winB);
+        document.getElementById("probALabel").textContent=a+" wins";
+        document.getElementById("probBLabel").textContent=b+" wins";
+        document.getElementById("tablePlayerA").textContent=a;
+        document.getElementById("tablePlayerB").textContent=b;
+        document.getElementById("barA").style.width=(winA*100)+"%";
+        document.getElementById("barDraw").style.width=(draw*100)+"%";
+        document.getElementById("barB").style.width=(winB*100)+"%";
+        const favorite = difference === 0 ? "The matchup looks very even." : (difference>0 ? a+" is the model's favorite." : b+" is the model's favorite.");
+        document.getElementById("predictionHeadline").textContent=favorite;
+        document.getElementById("predictionSummary").textContent =
+            "Estimated strength difference: "+signed(difference)+" points in favor of "+(difference>=0?a:b)+
+            ". This is a first-pass statistical estimate, not a calibrated result from a large database of head-to-head games.";
+        const rows = [
+            ["Games in sample",A.n,B.n],
+            ["Latest playing rating",A.currentRating,B.currentRating],
+            ["Performance floor",Math.round(A.floor),Math.round(B.floor)],
+            ["Typical performance",Math.round(A.typical),Math.round(B.typical)],
+            ["Performance ceiling",Math.round(A.ceiling),Math.round(B.ceiling)],
+            ["Most recent 10-game performance",Math.round(A.recent10),Math.round(B.recent10)],
+            ["Recent trend vs prior 20 games",A.trend===null?"Need 40 games":signed(A.trend),B.trend===null?"Need 40 games":signed(B.trend)],
+            ["Score in last 20 games",pct(A.recentScore),pct(B.recentScore)],
+            ["PGNs parsed for move patterns",A.parsed,B.parsed],
+            ["Captures per 20 half-moves",A.movePatterns?A.movePatterns.capturesPer20.toFixed(2):"Unavailable",B.movePatterns?B.movePatterns.capturesPer20.toFixed(2):"Unavailable"],
+            ["Pieces exposed per 20 half-moves",A.movePatterns?A.movePatterns.exposedPer20.toFixed(2):"Unavailable",B.movePatterns?B.movePatterns.exposedPer20.toFixed(2):"Unavailable"]
+        ];
+        const tbody=document.getElementById("comparisonRows"); tbody.innerHTML="";
+        rows.forEach(row=>{const tr=document.createElement("tr");row.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
+        document.getElementById("predictionCaveat").textContent =
+            "How to read the move-pattern signals: checks are tracked but are not rewarded by themselves; captures and pieces exposed to capture are only rough activity/safety clues. The current site cannot measure engine accuracy, missed wins, or move quality in difficult positions. Those should be added only when reliable position analysis is available. More games and parsed PGNs make the comparison more informative.";
+        document.getElementById("predictorResults").style.display="block";
+        status.textContent="Prediction complete. Compared "+A.n+" games for "+a+" and "+B.n+" games for "+b+".";
+    } catch(error) {
+        status.textContent=error.message || "Could not complete the prediction.";
+        status.className="status error";
+    } finally { button.disabled=false; }
 }
 
 function displayResults(username, games, timeClass) {
