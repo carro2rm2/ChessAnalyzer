@@ -339,7 +339,9 @@ function convertGame(game, username, timeClass) {
         opponentRating: opponent.rating,
         color: isWhite ? "White" : "Black",
         result: result,
-        score: score
+        score: score,
+        pgn: game.pgn || "",
+        gameUrl: game.url || ""
     };
 }
 
