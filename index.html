@@ -8,10 +8,8 @@
 <style>
 * { box-sizing: border-box; }
 body {
-    margin: 0;
-    padding: 30px 16px;
-    background: #101820;
-    color: #f1f5f9;
+    margin: 0; padding: 30px 16px;
+    background: #101820; color: #f1f5f9;
     font-family: Arial, sans-serif;
 }
 .container { max-width: 850px; margin: auto; }
@@ -19,33 +17,19 @@ header { text-align: center; margin-bottom: 30px; }
 h1 { font-size: 36px; margin-bottom: 8px; }
 .subtitle { color: #aab7c4; }
 .panel {
-    background: #1c2935;
-    border: 1px solid #344454;
-    border-radius: 12px;
-    padding: 22px;
-    margin-bottom: 20px;
+    background: #1c2935; border: 1px solid #344454;
+    border-radius: 12px; padding: 22px; margin-bottom: 20px;
 }
 input, select {
-    width: 100%;
-    padding: 14px;
-    border-radius: 7px;
-    border: 1px solid #526477;
-    background: #101820;
-    color: white;
-    font-size: 16px;
-    margin: 10px 0;
+    width: 100%; padding: 14px; border-radius: 7px;
+    border: 1px solid #526477; background: #101820;
+    color: white; font-size: 16px; margin: 10px 0;
 }
 select { cursor: pointer; }
 button {
-    width: 100%;
-    padding: 14px;
-    background: #16a36a;
-    color: white;
-    border: none;
-    border-radius: 7px;
-    font-size: 16px;
-    font-weight: bold;
-    cursor: pointer;
+    width: 100%; padding: 14px; background: #16a36a;
+    color: white; border: none; border-radius: 7px;
+    font-size: 16px; font-weight: bold; cursor: pointer;
 }
 button:hover { background: #128557; }
 button:disabled { opacity: .6; cursor: wait; }
@@ -53,16 +37,12 @@ button:disabled { opacity: .6; cursor: wait; }
 .error { color: #ff8585; }
 .results { display: none; }
 .metrics {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin: 15px 0;
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 12px; margin: 15px 0;
 }
 .metric {
-    background: #263747;
-    padding: 18px 10px;
-    text-align: center;
-    border-radius: 9px;
+    background: #263747; padding: 18px 10px;
+    text-align: center; border-radius: 9px;
 }
 .metric small { display: block; color: #b8c7d5; margin-bottom: 8px; }
 .metric strong { font-size: 29px; }
@@ -71,10 +51,8 @@ button:disabled { opacity: .6; cursor: wait; }
 .ceiling { color: #76baff; }
 h2 { margin-top: 0; }
 .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    text-align: center;
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px; text-align: center;
 }
 .stat-grid div { background: #263747; padding: 14px 5px; border-radius: 8px; }
 .stat-grid strong { display: block; font-size: 23px; margin-bottom: 5px; }
@@ -82,13 +60,9 @@ h2 { margin-top: 0; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 10px 6px; border-bottom: 1px solid #344454; }
 th { color: #aab7c4; }
-.win { color: #65d6a3; }
-.loss { color: #ff8585; }
-.draw { color: #f3bd63; }
-.bar-row { margin: 13px 0; }
-.bar-label { display: flex; justify-content: space-between; margin-bottom: 6px; }
-.bar { height: 9px; background: #344454; border-radius: 8px; overflow: hidden; }
-.bar-fill { height: 100%; background: #16a36a; }
+.win, .positive { color: #65d6a3; }
+.loss, .negative { color: #ff8585; }
+.draw, .neutral { color: #f3bd63; }
 footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 @media(max-width: 550px) {
     .metrics { gap: 6px; }
@@ -143,6 +117,25 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
     </div>
 
     <div class="panel">
+        <h2>Performance trend</h2>
+        <div class="metrics">
+            <div class="metric">
+                <small>Earlier performance</small>
+                <strong id="earlierPerformance">—</strong>
+            </div>
+            <div class="metric">
+                <small>Recent performance</small>
+                <strong id="recentPerformance">—</strong>
+            </div>
+            <div class="metric">
+                <small>Performance trend</small>
+                <strong id="performanceTrend">—</strong>
+            </div>
+        </div>
+        <p id="trendExplanation" class="muted"></p>
+    </div>
+
+    <div class="panel">
         <h2>Results overview</h2>
         <div class="stat-grid">
             <div><strong id="wins" class="win">0</strong><span>Wins</span></div>
@@ -176,7 +169,9 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
         <p><strong>Floor:</strong> The 20th percentile of rolling performance ratings. It represents a lower typical stretch, not a guaranteed minimum.</p>
         <p><strong>Typical:</strong> The median rolling performance rating.</p>
         <p><strong>Ceiling:</strong> The 80th percentile of rolling performance ratings. It represents a stronger typical stretch.</p>
+        <p><strong>Performance trend:</strong> The average of the five most recent rolling performance ratings minus the average of the first five. A positive number means recent results were stronger than earlier results.</p>
         <p><strong>Best stretch:</strong> The strongest individual window found in the games analyzed. A short hot streak is less reliable than a longer sample.</p>
+        <p class="muted">The trend is a comparison of two periods, not an official Chess.com rating change or a guarantee of future results.</p>
     </div>
 </div>
 
@@ -308,6 +303,10 @@ function percentile(values, p) {
     return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
+function average(values) {
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 async function analyzePlayer() {
     const usernameInput = document.getElementById("username").value.trim();
     if (!usernameInput) {
@@ -333,7 +332,6 @@ async function analyzePlayer() {
 
         let games = [];
 
-        // Download recent monthly archives in small batches.
         for (let i = 0; i < archives.length && games.length < GAME_LIMIT; i += 3) {
             setStatus("Downloading " + timeClassName.toLowerCase() + " game history... " +
                 Math.min(i + 3, archives.length) + " of " + archives.length +
@@ -394,7 +392,7 @@ function displayResults(username, games, timeClass) {
 
     const windowNote = games.length < 20
         ? " Only " + games.length + " games were available, so the main performance range uses " +
-          games.length + "-game window" + (games.length === 1 ? "" : "s") + " instead of 20-game windows."
+          games.length + "-game windows instead of 20-game windows."
         : " Performance range uses rolling 20-game windows.";
 
     document.getElementById("gameCount").textContent =
@@ -405,6 +403,44 @@ function displayResults(username, games, timeClass) {
     document.getElementById("floor").textContent = Math.round(percentile(values, 0.20));
     document.getElementById("typical").textContent = Math.round(percentile(values, 0.50));
     document.getElementById("ceiling").textContent = Math.round(percentile(values, 0.80));
+
+    // Performance trend: compare five early windows with five recent windows.
+    // At least 48 games ensures the underlying game periods do not overlap.
+    const earlierElement = document.getElementById("earlierPerformance");
+    const recentElement = document.getElementById("recentPerformance");
+    const trendElement = document.getElementById("performanceTrend");
+    const trendExplanation = document.getElementById("trendExplanation");
+
+    if (games.length >= 48 && mainWindow === 20 && mainRatings.length >= 10) {
+        const earlierRatings = mainRatings.slice(0, 5).map(r => r.rating);
+        const recentRatings = mainRatings.slice(-5).map(r => r.rating);
+
+        const earlierAverage = Math.round(average(earlierRatings));
+        const recentAverage = Math.round(average(recentRatings));
+        const trend = recentAverage - earlierAverage;
+
+        earlierElement.textContent = earlierAverage;
+        recentElement.textContent = recentAverage;
+        trendElement.textContent = (trend > 0 ? "+" : "") + trend;
+        trendElement.className =
+            trend > 0 ? "positive" : trend < 0 ? "negative" : "neutral";
+
+        trendExplanation.textContent =
+            "Compared the first five 20-game windows with the last five. " +
+            (trend > 0
+                ? "Recent performance is stronger by " + trend + " points."
+                : trend < 0
+                    ? "Recent performance is lower by " + Math.abs(trend) + " points."
+                    : "Average performance is unchanged between these periods.");
+    } else {
+        earlierElement.textContent = "—";
+        recentElement.textContent = "—";
+        trendElement.textContent = "—";
+        trendElement.className = "";
+        trendExplanation.textContent =
+            "At least 48 games are needed to compare five earlier and five recent 20-game windows without sharing games. Current sample: " +
+            games.length + " games.";
+    }
 
     document.getElementById("wins").textContent = wins;
     document.getElementById("draws").textContent = draws;
