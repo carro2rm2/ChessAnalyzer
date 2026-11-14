@@ -411,7 +411,7 @@ function createStockfishWorker() {
     return stockfishReady;
 }
 
-function engineSearch(fen, depth = 8) {
+function engineSearch(fen, moveTimeMs = 500) {
     return new Promise((resolve, reject) => {
         if (!stockfishWorker) return reject(new Error("Stockfish is not ready."));
         const scores = {};
@@ -420,14 +420,20 @@ function engineSearch(fen, depth = 8) {
         const timeout = setTimeout(() => {
             if (finished) return;
             finished = true;
+            stockfishWorker.postMessage("stop");
             stockfishWorker.onmessage = previousHandler;
-            reject(new Error("Stockfish search timed out."));
-        }, 25000);
+            reject(new Error("Stockfish took too long on one position. Try again with fewer browser tabs open."));
+        }, 10000);
+
         stockfishWorker.onmessage = event => {
             const line = String(event.data || "");
             const match = line.match(/info depth (\d+).*?multipv (\d+).*?score (cp|mate) (-?\d+).*? pv ([^\s]+)/);
-            if (match && Number(match[1]) >= depth) {
-                scores[Number(match[2])] = { type: match[3], value: Number(match[4]), move: match[5] };
+            if (match) {
+                scores[Number(match[2])] = {
+                    type: match[3],
+                    value: Number(match[4]),
+                    move: match[5]
+                };
             }
             if (line.startsWith("bestmove")) {
                 if (finished) return;
@@ -438,7 +444,7 @@ function engineSearch(fen, depth = 8) {
             }
         };
         stockfishWorker.postMessage("position fen " + fen);
-        stockfishWorker.postMessage("go depth " + depth);
+        stockfishWorker.postMessage("go movetime " + moveTimeMs);
     });
 }
 
@@ -525,8 +531,8 @@ async function analyzeChessQuality() {
                 setEngineStatus("Analyzing game " + (gi + 1) + " of " + games.length +
                     " · your move " + totalMoves + " · " + game.opponent + "...");
 
-                const beforeScores = await engineSearch(beforeFen, 8);
-                const afterScores = await engineSearch(replay.fen(), 8);
+                const beforeScores = await engineSearch(beforeFen, 500);
+                const afterScores = await engineSearch(replay.fen(), 500);
                 const best = beforeScores[1], second = beforeScores[2] || beforeScores[1];
                 if (!best || !afterScores[1]) continue;
 
