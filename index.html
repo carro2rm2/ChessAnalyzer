@@ -136,23 +136,6 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
     </div>
 
     <div class="panel">
-        <h2>Stockfish move analysis — latest 3 games</h2>
-        <p class="muted">Uses the lightweight, single-threaded Stockfish engine. It checks up to 40 of your moves, so this should finish much faster than analyzing 20 full games.</p>
-        <button id="engineAnalyzeBtn" onclick="analyzeStockfish()">Analyze with Stockfish</button>
-        <div id="engineStatus" class="status">First run downloads the small engine (about 1.7 MB).</div>
-        <div class="metrics">
-            <div class="metric"><small>Estimated move accuracy</small><strong id="engineAccuracy">—</strong></div>
-            <div class="metric"><small>Average centipawn loss</small><strong id="averageCpl">—</strong></div>
-            <div class="metric"><small>Best moves found</small><strong id="bestMovesFound">—</strong></div>
-        </div>
-        <div class="metrics">
-            <div class="metric"><small>Constructive aggressive moves</small><strong id="constructiveMoves">—</strong></div>
-            <div class="metric"><small>Reckless aggressive moves</small><strong id="recklessMoves">—</strong></div>
-            <div class="metric"><small>Moves analyzed</small><strong id="movesAnalyzed">—</strong></div>
-        </div>
-        <p class="muted">Accuracy is an experimental estimate based on engine evaluation loss, not Chess.com accuracy. Aggression counts checks and captures; constructive/reckless labels depend on engine centipawn loss.</p>
-    </div>
-    <div class="panel">
         <h2>Results overview</h2>
         <div class="stat-grid">
             <div><strong id="wins" class="win">0</strong><span>Wins</span></div>
@@ -195,7 +178,6 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 <footer>ChessAnalyzer · Uses Chess.com's public Published Data API</footer>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <script>
 const API = "https://api.chess.com/pub";
 const GAME_LIMIT = 100;
@@ -285,8 +267,7 @@ function convertGame(game, username, timeClass) {
         opponentRating: opponent.rating,
         color: isWhite ? "White" : "Black",
         result: result,
-        score: score,
-        pgn: game.pgn || ""
+        score: score
     };
 }
 
@@ -324,170 +305,6 @@ function percentile(values, p) {
 
 function average(values) {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-
-let latestAnalyzedGames = [];
-let stockfishWorker = null;
-let stockfishInitPromise = null;
-
-function engineStatus(message, isError = false) {
-    const el = document.getElementById("engineStatus");
-    el.textContent = message;
-    el.className = isError ? "status error" : "status";
-}
-
-function loadStockfish() {
-    if (stockfishWorker) return Promise.resolve(stockfishWorker);
-    if (stockfishInitPromise) return stockfishInitPromise;
-    stockfishInitPromise = new Promise((resolve, reject) => {
-        const worker = new Worker("./stockfish-worker.js");
-        stockfishWorker = worker;
-        let done = false;
-        const timer = setTimeout(() => {
-            if (done) return;
-            done = true;
-            worker.terminate();
-            stockfishWorker = null;
-            stockfishInitPromise = null;
-            reject(new Error("Stockfish did not finish loading. Check your connection and try once more."));
-        }, 20000);
-        worker.onmessage = event => {
-            const line = String(event.data || "");
-            if (line.includes("uciok") && !done) {
-                done = true;
-                clearTimeout(timer);
-                worker.postMessage("setoption name MultiPV value 2");
-                worker.postMessage("isready");
-                const readyTimer = setTimeout(() => {
-                    worker.terminate();
-                    stockfishWorker = null;
-                    stockfishInitPromise = null;
-                    reject(new Error("Stockfish loaded but did not become ready."));
-                }, 8000);
-                worker.onmessage = readyEvent => {
-                    if (String(readyEvent.data || "").includes("readyok")) {
-                        clearTimeout(readyTimer);
-                        resolve(worker);
-                    }
-                };
-            }
-        };
-        worker.postMessage("uci");
-        worker.onerror = event => {
-            if (!done) {
-                done = true;
-                clearTimeout(timer);
-                worker.terminate();
-                stockfishWorker = null;
-                stockfishInitPromise = null;
-                reject(new Error("Stockfish worker failed to load: " + (event.message || "browser blocked the engine files")));
-            }
-        };
-    });
-    return stockfishInitPromise;
-}
-
-function stockfishSearch(fen, moveTime = 120) {
-    return new Promise((resolve, reject) => {
-        if (!stockfishWorker) return reject(new Error("Stockfish is not loaded."));
-        const scores = {};
-        let finished = false;
-        const timer = setTimeout(() => {
-            if (finished) return;
-            finished = true;
-            stockfishWorker.postMessage("stop");
-            reject(new Error("A Stockfish position search timed out."));
-        }, 6000);
-        const oldHandler = stockfishWorker.onmessage;
-        stockfishWorker.onmessage = event => {
-            const line = String(event.data || "");
-            const match = line.match(/info depth \d+.*?multipv (\d+).*?score (cp|mate) (-?\d+).*? pv (\S+)/);
-            if (match) {
-                scores[Number(match[1])] = { type: match[2], value: Number(match[3]), move: match[4] };
-            }
-            if (line.startsWith("bestmove")) {
-                if (finished) return;
-                finished = true;
-                clearTimeout(timer);
-                stockfishWorker.onmessage = oldHandler;
-                resolve(scores);
-            }
-        };
-        stockfishWorker.postMessage("position fen " + fen);
-        stockfishWorker.postMessage("go movetime " + moveTime);
-    });
-}
-
-function engineScoreCp(score) {
-    if (!score) return 0;
-    if (score.type === "mate") return score.value > 0 ? 10000 : -10000;
-    return score.value;
-}
-
-async function analyzeStockfish() {
-    const button = document.getElementById("engineAnalyzeBtn");
-    button.disabled = true;
-    try {
-        if (!latestAnalyzedGames.length) throw new Error("Analyze Player first to load your game history.");
-        if (typeof Chess !== "function") throw new Error("The chess move parser did not load. Refresh and try again.");
-        engineStatus("Loading Stockfish (first run may take a few seconds)...");
-        await loadStockfish();
-
-        const games = latestAnalyzedGames.slice(-3).reverse();
-        let moveCount = 0, totalLoss = 0, accuracySum = 0;
-        let bestMoves = 0, aggressiveMoves = 0, constructive = 0, reckless = 0;
-
-        for (let gi = 0; gi < games.length && moveCount < 40; gi++) {
-            const game = games[gi];
-            const parser = new Chess();
-            if (!game.pgn || !parser.load_pgn(game.pgn, { sloppy: true })) continue;
-            const moves = parser.history({ verbose: true });
-            const replay = new Chess();
-            const myColor = game.color === "White" ? "w" : "b";
-
-            for (const pgnMove of moves) {
-                if (moveCount >= 40) break;
-                const isMyMove = replay.turn() === myColor;
-                const beforeFen = replay.fen();
-                const played = replay.move(pgnMove);
-                if (!played || !isMyMove) continue;
-                moveCount++;
-                const isAggressive = played.san.includes("+") || played.san.includes("#") || Boolean(played.captured);
-                if (isAggressive) aggressiveMoves++;
-
-                engineStatus("Analyzing your move " + moveCount + " of up to 40 · game " + (gi + 1) + " of " + games.length + "...");
-                const before = await stockfishSearch(beforeFen, 120);
-                const after = await stockfishSearch(replay.fen(), 120);
-                const top = before[1];
-                if (!top || !after[1]) continue;
-
-                const bestEval = engineScoreCp(top);
-                const playedEval = -engineScoreCp(after[1]);
-                const loss = Math.max(0, bestEval - playedEval);
-                totalLoss += loss;
-                accuracySum += Math.max(0, Math.min(100, 100 * Math.exp(-loss / 120)));
-                const playedUci = played.from + played.to + (played.promotion || "");
-                if (top.move === playedUci) bestMoves++;
-                if (isAggressive && loss <= 50) constructive++;
-                if (isAggressive && loss >= 100) reckless++;
-            }
-        }
-
-        if (!moveCount) throw new Error("No PGNs could be read from the recent games. Try analyzing your player history again.");
-        document.getElementById("engineAccuracy").textContent = (accuracySum / moveCount).toFixed(1) + "%";
-        document.getElementById("averageCpl").textContent = Math.round(totalLoss / moveCount);
-        document.getElementById("bestMovesFound").textContent = bestMoves;
-        document.getElementById("constructiveMoves").textContent = constructive;
-        document.getElementById("recklessMoves").textContent = reckless;
-        document.getElementById("movesAnalyzed").textContent = moveCount;
-        engineStatus("Finished. Analyzed " + moveCount + " of your moves across " + games.length + " recent games.");
-    } catch (error) {
-        console.error(error);
-        engineStatus(error.message || "Stockfish analysis failed.", true);
-    } finally {
-        button.disabled = false;
-    }
 }
 
 async function analyzePlayer() {
@@ -546,7 +363,6 @@ async function analyzePlayer() {
                 " games were found for this player. Try another time control.");
         }
 
-        latestAnalyzedGames = games;
         displayResults(usernameInput, games, timeClass);
         setStatus("Analysis complete. Found " + games.length + " rated " +
             timeClassName.toLowerCase() + " games.");
