@@ -14,15 +14,6 @@ for (const engineBase of engineBases) {
         locateFile: function (path) {
             return engineBase + path;
         },
-        onRuntimeInitialized: function () {
-            self.postMessage("ENGINE_RUNTIME_READY");
-        },
-        printErr: function (message) {
-            self.postMessage("ENGINE_ERROR: " + message);
-        },
-        onAbort: function (reason) {
-            self.postMessage("ENGINE_ABORT: " + reason);
-        }
     };
 
     try {
