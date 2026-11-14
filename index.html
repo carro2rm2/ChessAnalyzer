@@ -757,22 +757,30 @@ function predictorStats(games) {
     const trend = prior20 === null ? null : recent20 - prior20;
     const recentScoreGames = games.slice(-20);
     const recentScore = recentScoreGames.reduce((s,g)=>s+g.score,0)/recentScoreGames.length;
-    let moves=0, checks=0, captures=0, exposed=0, parsed=0;
-    games.slice(-40).forEach(g => {
-        if (!g.pgn) return;
+    const patternRows = games.slice(-40).map(g => {
+        if (!g.pgn) return null;
         const review = parseGameForReview(g.pgn);
-        if (!review) return;
-        parsed++;
-        moves += review.totals.moves;
-        checks += review.totals.checks;
-        captures += review.totals.captures;
-        exposed += review.totals.exposed;
+        return review ? review.totals : null;
     });
-    const movePatterns = moves ? {
-        checksPer20: checks / moves * 20,
-        capturesPer20: captures / moves * 20,
-        exposedPer20: exposed / moves * 20
-    } : null;
+    const parsedRows = patternRows.filter(Boolean);
+    const parsed = parsedRows.length;
+    const moves = parsedRows.reduce((s,x)=>s+x.moves,0);
+    const checks = parsedRows.reduce((s,x)=>s+x.checks,0);
+    const captures = parsedRows.reduce((s,x)=>s+x.captures,0);
+    const exposed = parsedRows.reduce((s,x)=>s+x.exposed,0);
+    function eventRates(rows) {
+        const total = rows.filter(Boolean).reduce((a,x) => {
+            a.moves += x.moves; a.checks += x.checks; a.captures += x.captures; a.exposed += x.exposed; return a;
+        }, {moves:0,checks:0,captures:0,exposed:0});
+        return total.moves ? {
+            checksPer20:total.checks/total.moves*20,
+            capturesPer20:total.captures/total.moves*20,
+            exposedPer20:total.exposed/total.moves*20
+        } : null;
+    }
+    const movePatterns = eventRates(parsedRows);
+    const recentPatterns = eventRates(patternRows.slice(-20));
+    const priorPatterns = eventRates(patternRows.slice(-40,-20));
     // A small, deliberately capped adjustment: captures contribute modestly;
     // checks alone are not rewarded, and exposed pieces reduce the score.
     const activityScore = movePatterns
@@ -781,7 +789,7 @@ function predictorStats(games) {
     const strength = .45*recent20 + .20*recent10 + .20*currentRating + .10*floor + .05*ceiling
         + (trend === null ? 0 : Math.max(-35,Math.min(35,trend*.12)))
         + activityScore;
-    return { n,currentRating,typical,floor,ceiling,recent10,recent20,trend,recentScore,parsed,moves,movePatterns,strength };
+    return { n,currentRating,typical,floor,ceiling,recent10,recent20,trend,recentScore,parsed,moves,movePatterns,recentPatterns,priorPatterns,strength };
 }
 
 function signed(value) { return (value > 0 ? "+" : "") + Math.round(value); }
@@ -837,8 +845,9 @@ async function predictMatchup() {
             ["Recent trend vs prior 20 games",A.trend===null?"Need 40 games":signed(A.trend),B.trend===null?"Need 40 games":signed(B.trend)],
             ["Score in last 20 games",pct(A.recentScore),pct(B.recentScore)],
             ["PGNs parsed for move patterns",A.parsed,B.parsed],
-            ["Captures per 20 half-moves",A.movePatterns?A.movePatterns.capturesPer20.toFixed(2):"Unavailable",B.movePatterns?B.movePatterns.capturesPer20.toFixed(2):"Unavailable"],
-            ["Pieces exposed per 20 half-moves",A.movePatterns?A.movePatterns.exposedPer20.toFixed(2):"Unavailable",B.movePatterns?B.movePatterns.exposedPer20.toFixed(2):"Unavailable"]
+            ["Checks per 20 half-moves (recent / prior)",A.recentPatterns?(A.recentPatterns.checksPer20.toFixed(2)+" / "+(A.priorPatterns?A.priorPatterns.checksPer20.toFixed(2):"—")):"Unavailable",B.recentPatterns?(B.recentPatterns.checksPer20.toFixed(2)+" / "+(B.priorPatterns?B.priorPatterns.checksPer20.toFixed(2):"—")):"Unavailable"],
+            ["Captures per 20 half-moves (recent / prior)",A.recentPatterns?(A.recentPatterns.capturesPer20.toFixed(2)+" / "+(A.priorPatterns?A.priorPatterns.capturesPer20.toFixed(2):"—")):"Unavailable",B.recentPatterns?(B.recentPatterns.capturesPer20.toFixed(2)+" / "+(B.priorPatterns?B.priorPatterns.capturesPer20.toFixed(2):"—")):"Unavailable"],
+            ["Pieces exposed per 20 (recent / prior)",A.recentPatterns?(A.recentPatterns.exposedPer20.toFixed(2)+" / "+(A.priorPatterns?A.priorPatterns.exposedPer20.toFixed(2):"—")):"Unavailable",B.recentPatterns?(B.recentPatterns.exposedPer20.toFixed(2)+" / "+(B.priorPatterns?B.priorPatterns.exposedPer20.toFixed(2):"—")):"Unavailable"]
         ];
         const tbody=document.getElementById("comparisonRows"); tbody.innerHTML="";
         rows.forEach(row=>{const tr=document.createElement("tr");row.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
