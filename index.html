@@ -823,9 +823,11 @@ async function predictMatchup() {
         const draw = Math.max(0, Math.min(rawDraw, maxValidDraw, 1));
         let winA = expectedScoreA - draw / 2;
         let winB = (1 - expectedScoreA) - draw / 2;
-        // Clamp tiny floating-point edge cases, then normalize to exactly 100%.
-        winA = Math.max(0, winA);
-        winB = Math.max(0, winB);
+        // Keep a small upset chance for both players, even in extreme mismatches.
+        // Normalize afterward so all three outcomes still total exactly 100%.
+        const minimumWinChance = 0.001; // 0.1%
+        winA = Math.max(minimumWinChance, winA);
+        winB = Math.max(minimumWinChance, winB);
         const probabilityTotal = winA + draw + winB;
         const normalizedWinA = winA / probabilityTotal;
         const normalizedDraw = draw / probabilityTotal;
