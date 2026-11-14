@@ -135,6 +135,30 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
         <p id="trendExplanation" class="muted"></p>
     </div>
 
+
+    <div class="panel">
+        <h2>Chess quality analysis — latest 20 games</h2>
+        <p class="muted">Stockfish analyzes your moves locally in your browser. The first run downloads a small engine (about 1.7 MB). Analysis may take several minutes.</p>
+        <button id="engineAnalyzeBtn" onclick="analyzeChessQuality()">Analyze latest 20 games</button>
+        <div id="engineStatus" class="status">Run the analysis after loading your game history.</div>
+        <div class="metrics">
+            <div class="metric"><small>Engine move accuracy</small><strong id="engineAccuracy">—</strong></div>
+            <div class="metric"><small>Average centipawn loss</small><strong id="averageCpl">—</strong></div>
+            <div class="metric"><small>Move quality score</small><strong id="moveQuality">—</strong></div>
+        </div>
+        <div class="metrics">
+            <div class="metric"><small>Aggressiveness</small><strong id="aggressionScore">—</strong></div>
+            <div class="metric"><small>Constructive aggression</small><strong id="constructiveAggression">—</strong></div>
+            <div class="metric"><small>Reckless attacking moves</small><strong id="recklessAttacks">—</strong></div>
+        </div>
+        <div class="metrics">
+            <div class="metric"><small>Difficult good moves</small><strong id="difficultGoodMoves">—</strong></div>
+            <div class="metric"><small>Strong-move bonus</small><strong id="strongMoveBonus">—</strong></div>
+            <div class="metric"><small>Moves analyzed</small><strong id="movesAnalyzed">—</strong></div>
+        </div>
+        <p id="engineExplanation" class="muted">Accuracy alone can be misleading: simple forced moves and opponent blunders can make it look unusually high. Compare these experimental indicators across similar time controls and sample sizes.</p>
+    </div>
+
     <div class="panel">
         <h2>Results overview</h2>
         <div class="stat-grid">
@@ -178,6 +202,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 <footer>ChessAnalyzer · Uses Chess.com's public Published Data API</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <script>
 const API = "https://api.chess.com/pub";
 const GAME_LIMIT = 100;
@@ -267,7 +292,8 @@ function convertGame(game, username, timeClass) {
         opponentRating: opponent.rating,
         color: isWhite ? "White" : "Black",
         result: result,
-        score: score
+        score: score,
+        pgn: game.pgn || ""
     };
 }
 
@@ -305,6 +331,227 @@ function percentile(values, p) {
 
 function average(values) {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+
+let stockfishWorker = null;
+let stockfishReady = null;
+let latestAnalyzedGames = [];
+
+function setEngineStatus(message, isError = false) {
+    const el = document.getElementById("engineStatus");
+    el.textContent = message;
+    el.className = isError ? "status error" : "status";
+}
+
+function createStockfishWorker() {
+    if (stockfishWorker) return Promise.resolve(stockfishWorker);
+    if (stockfishReady) return stockfishReady;
+    stockfishReady = new Promise((resolve, reject) => {
+        try {
+            const wrapper = `
+                self.Module = {
+                    locateFile: function(path) {
+                        return "https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/" + path;
+                    }
+                };
+                importScripts("https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/stockfish-19-lite-single.js");
+            `;
+            const blob = new Blob([wrapper], { type: "text/javascript" });
+            stockfishWorker = new Worker(URL.createObjectURL(blob));
+            let done = false;
+            const timer = setTimeout(() => {
+                if (!done) {
+                    done = true;
+                    reject(new Error("Stockfish did not start. Check your connection and try again."));
+                }
+            }, 30000);
+            stockfishWorker.onmessage = event => {
+                if (String(event.data || "").includes("uciok") && !done) {
+                    done = true;
+                    clearTimeout(timer);
+                    resolve(stockfishWorker);
+                }
+            };
+            stockfishWorker.onerror = () => {
+                if (!done) {
+                    done = true;
+                    clearTimeout(timer);
+                    reject(new Error("The Stockfish engine could not load in this browser."));
+                }
+            };
+            stockfishWorker.postMessage("uci");
+        } catch (error) { reject(error); }
+    });
+    return stockfishReady;
+}
+
+function engineSearch(fen, depth = 8) {
+    return new Promise((resolve, reject) => {
+        if (!stockfishWorker) return reject(new Error("Stockfish is not ready."));
+        const scores = {};
+        let finished = false;
+        const previousHandler = stockfishWorker.onmessage;
+        const timeout = setTimeout(() => {
+            if (finished) return;
+            finished = true;
+            stockfishWorker.onmessage = previousHandler;
+            reject(new Error("Stockfish search timed out."));
+        }, 25000);
+        stockfishWorker.onmessage = event => {
+            const line = String(event.data || "");
+            const match = line.match(/info depth (\d+).*?multipv (\d+).*?score (cp|mate) (-?\d+).*? pv ([^\s]+)/);
+            if (match && Number(match[1]) >= depth) {
+                scores[Number(match[2])] = { type: match[3], value: Number(match[4]), move: match[5] };
+            }
+            if (line.startsWith("bestmove")) {
+                if (finished) return;
+                finished = true;
+                clearTimeout(timeout);
+                stockfishWorker.onmessage = previousHandler;
+                resolve(scores);
+            }
+        };
+        stockfishWorker.postMessage("position fen " + fen);
+        stockfishWorker.postMessage("go depth " + depth);
+    });
+}
+
+function scoreToPawns(score) {
+    if (!score) return 0;
+    if (score.type === "mate") return score.value > 0 ? 10 : -10;
+    return score.value / 100;
+}
+
+function findKingSquare(board, color) {
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = board[row][col];
+            if (piece && piece.type === "k" && piece.color === color) {
+                return String.fromCharCode(97 + col) + (8 - row);
+            }
+        }
+    }
+    return null;
+}
+
+function squareDistance(a, b) {
+    const fileA = a.charCodeAt(0) - 97, rankA = Number(a[1]);
+    const fileB = b.charCodeAt(0) - 97, rankB = Number(b[1]);
+    return Math.max(Math.abs(fileA - fileB), Math.abs(rankA - rankB));
+}
+
+function moveAggression(move, boardBefore, playerColor) {
+    const enemyColor = playerColor === "w" ? "b" : "w";
+    const enemyKing = findKingSquare(boardBefore, enemyColor);
+    let score = 0;
+    if (move.san.includes("+") || move.san.includes("#")) score += 1.0;
+    if (move.captured) score += 0.7;
+    if (move.piece === "p") {
+        const rank = Number(move.to[1]);
+        if ((playerColor === "w" && rank >= 5) || (playerColor === "b" && rank <= 4)) score += 0.4;
+    }
+    if (enemyKing && move.piece !== "p") {
+        if (squareDistance(move.to, enemyKing) < squareDistance(move.from, enemyKing)) score += 0.5;
+    }
+    return score;
+}
+
+function parsePgnMoves(pgn) {
+    if (typeof Chess !== "function") throw new Error("The chess move parser did not load. Refresh the page and try again.");
+    const parsed = new Chess();
+    if (!pgn || !parsed.load_pgn(pgn, { sloppy: true })) return null;
+    return parsed.history({ verbose: true });
+}
+
+async function analyzeChessQuality() {
+    const button = document.getElementById("engineAnalyzeBtn");
+    button.disabled = true;
+    try {
+        if (!latestAnalyzedGames.length) throw new Error("Click Analyze Player first to load your recent games.");
+        setEngineStatus("Loading Stockfish engine...");
+        await createStockfishWorker();
+        stockfishWorker.postMessage("setoption name MultiPV value 3");
+        stockfishWorker.postMessage("isready");
+
+        const games = latestAnalyzedGames.slice(-20).reverse();
+        let totalMoves = 0, totalLoss = 0, accuracyTotal = 0;
+        let aggressive = 0, constructive = 0, reckless = 0;
+        let difficult = 0, difficultyBonus = 0, skipped = 0;
+
+        for (let gi = 0; gi < games.length; gi++) {
+            const game = games[gi];
+            const moves = parsePgnMoves(game.pgn);
+            if (!moves || !moves.length) { skipped++; continue; }
+            const replay = new Chess();
+            const playerColor = game.color === "White" ? "w" : "b";
+
+            for (let mi = 0; mi < moves.length; mi++) {
+                const move = moves[mi];
+                const isPlayerMove = replay.turn() === playerColor;
+                const beforeFen = replay.fen();
+                const boardBefore = replay.board();
+                const applied = replay.move(move);
+                if (!applied || !isPlayerMove) continue;
+                totalMoves++;
+
+                const aggression = moveAggression(applied, boardBefore, playerColor);
+                aggressive += aggression;
+                setEngineStatus("Analyzing game " + (gi + 1) + " of " + games.length +
+                    " · your move " + totalMoves + " · " + game.opponent + "...");
+
+                const beforeScores = await engineSearch(beforeFen, 8);
+                const afterScores = await engineSearch(replay.fen(), 8);
+                const best = beforeScores[1], second = beforeScores[2] || beforeScores[1];
+                if (!best || !afterScores[1]) continue;
+
+                const bestEval = scoreToPawns(best);
+                const playedEval = -scoreToPawns(afterScores[1]);
+                const loss = Math.max(0, bestEval - playedEval);
+                totalLoss += loss;
+                accuracyTotal += Math.max(0, Math.min(100, 100 * Math.exp(-0.08 * loss)));
+
+                if (aggression > 0 && loss <= 0.5) constructive++;
+                if (aggression > 0 && loss >= 1.0) reckless++;
+
+                const gap = Math.max(0, bestEval - scoreToPawns(second));
+                const playedUci = applied.from + applied.to + (applied.promotion || "");
+                if (best.move === playedUci && gap >= 0.35) {
+                    difficult++;
+                    difficultyBonus += Math.min(2, gap);
+                }
+            }
+        }
+
+        if (!totalMoves) throw new Error("No usable moves were found in the downloaded PGNs. Chess.com may not have supplied PGN data.");
+        const avgLoss = totalLoss / totalMoves;
+        const avgAccuracy = accuracyTotal / totalMoves;
+        const quality = Math.max(0, Math.min(100, 100 - avgLoss * 12));
+        const aggressionScore = Math.min(100, aggressive / totalMoves * 35);
+
+        document.getElementById("engineAccuracy").textContent = avgAccuracy.toFixed(1) + "%";
+        document.getElementById("averageCpl").textContent = Math.round(avgLoss * 100);
+        document.getElementById("moveQuality").textContent = quality.toFixed(1) + "/100";
+        document.getElementById("aggressionScore").textContent = aggressionScore.toFixed(1) + "/100";
+        document.getElementById("constructiveAggression").textContent = constructive;
+        document.getElementById("recklessAttacks").textContent = reckless;
+        document.getElementById("difficultGoodMoves").textContent = difficult;
+        document.getElementById("strongMoveBonus").textContent = difficultyBonus.toFixed(1);
+        document.getElementById("movesAnalyzed").textContent = totalMoves;
+        document.getElementById("engineExplanation").textContent =
+            "Analyzed " + totalMoves + " of your moves across up to 20 recent games. " +
+            (skipped ? skipped + " game(s) had PGNs that could not be parsed. " : "") +
+            "Accuracy is an experimental score derived from engine evaluation loss, not Chess.com accuracy. " +
+            "Aggressiveness is a heuristic based on checks, captures, forward pawn advances and moves toward the enemy king. " +
+            "Difficult good moves count when your move matches the engine's top choice and its top line leads the second line by at least 0.35 pawns. " +
+            "These indicators are experimental and should not be treated as an official rating.";
+        setEngineStatus("Engine analysis complete.");
+    } catch (error) {
+        console.error(error);
+        setEngineStatus(error.message || "Engine analysis failed.", true);
+    } finally {
+        button.disabled = false;
+    }
 }
 
 async function analyzePlayer() {
@@ -363,6 +610,7 @@ async function analyzePlayer() {
                 " games were found for this player. Try another time control.");
         }
 
+        latestAnalyzedGames = games;
         displayResults(usernameInput, games, timeClass);
         setStatus("Analysis complete. Found " + games.length + " rated " +
             timeClassName.toLowerCase() + " games.");
