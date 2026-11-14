@@ -347,41 +347,66 @@ function setEngineStatus(message, isError = false) {
 function createStockfishWorker() {
     if (stockfishWorker) return Promise.resolve(stockfishWorker);
     if (stockfishReady) return stockfishReady;
+
     stockfishReady = new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error("Stockfish timed out while loading. Try refreshing the page or allowing cdn.jsdelivr.net and unpkg.com."));
+        }, 45000);
+
+        const wrapper = String.raw\`
+            let engineBase = "https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/";
+            var Module = {
+                locateFile: function(path) {
+                    return engineBase + path;
+                }
+            };
+            try {
+                importScripts(engineBase + "stockfish-19-lite-single.js");
+            } catch (firstError) {
+                engineBase = "https://unpkg.com/stockfish@19.0.1/bin/";
+                Module.locateFile = function(path) { return engineBase + path; };
+                try {
+                    importScripts(engineBase + "stockfish-19-lite-single.js");
+                } catch (secondError) {
+                    postMessage("ENGINE_LOAD_ERROR: " + secondError.message);
+                }
+            }
+        \`;
         try {
-            const wrapper = `
-                self.Module = {
-                    locateFile: function(path) {
-                        return "https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/" + path;
-                    }
-                };
-                importScripts("https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/stockfish-19-lite-single.js");
-            `;
             const blob = new Blob([wrapper], { type: "text/javascript" });
             stockfishWorker = new Worker(URL.createObjectURL(blob));
-            let done = false;
-            const timer = setTimeout(() => {
-                if (!done) {
-                    done = true;
-                    reject(new Error("Stockfish did not start. Check your connection and try again."));
-                }
-            }, 30000);
             stockfishWorker.onmessage = event => {
-                if (String(event.data || "").includes("uciok") && !done) {
-                    done = true;
+                const line = String(event.data || "");
+                if (line.startsWith("ENGINE_LOAD_ERROR:")) {
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timer);
+                        reject(new Error(line.replace("ENGINE_LOAD_ERROR:", "Stockfish loader error:").trim()));
+                    }
+                    return;
+                }
+                if (line.includes("uciok") && !settled) {
+                    settled = true;
                     clearTimeout(timer);
                     resolve(stockfishWorker);
                 }
             };
-            stockfishWorker.onerror = () => {
-                if (!done) {
-                    done = true;
+            stockfishWorker.onerror = event => {
+                if (!settled) {
+                    settled = true;
                     clearTimeout(timer);
-                    reject(new Error("The Stockfish engine could not load in this browser."));
+                    reject(new Error("Browser worker error: " + (event.message || "the engine script was blocked or failed to initialize") +
+                        ". Check browser extensions, firewall settings, or CDN access."));
                 }
             };
             stockfishWorker.postMessage("uci");
-        } catch (error) { reject(error); }
+        } catch (error) {
+            clearTimeout(timer);
+            reject(error);
+        }
     });
     return stockfishReady;
 }
