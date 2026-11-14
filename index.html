@@ -536,6 +536,14 @@ function buildMoveReview(games) {
             " (" + g.result + ")";
         select.appendChild(option);
     });
+    if (!window.Chess) {
+        document.getElementById("reviewStatus").textContent =
+            "PGNs were found, but the small chess replay library did not load. The main dashboard still works; try refreshing the page.";
+        document.getElementById("aggregateExplanation").textContent =
+            "Move summaries are unavailable because the replay library could not be loaded.";
+        document.getElementById("reviewContent").style.display = "none";
+        return;
+    }
     const parsed = loadedGames.map(g => parseGameForReview(g.pgn)).filter(Boolean);
     const totals = parsed.reduce((a, item) => {
         Object.keys(a).forEach(k => a[k] += item.totals[k]);
