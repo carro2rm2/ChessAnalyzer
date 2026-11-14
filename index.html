@@ -352,8 +352,18 @@ function loadStockfish() {
             stockfishInitPromise = null;
             reject(new Error("Stockfish did not finish loading. Check your connection and try once more."));
         }, 20000);
+        let runtimeReady = false;
         worker.onmessage = event => {
             const line = String(event.data || "");
+            if (line === "ENGINE_RUNTIME_READY" && !runtimeReady) {
+                runtimeReady = true;
+                worker.postMessage("uci");
+                return;
+            }
+            if (line.startsWith("ENGINE_ERROR:") || line.startsWith("ENGINE_ABORT:")) {
+                engineStatus(line, true);
+                return;
+            }
             if (line.includes("uciok") && !done) {
                 done = true;
                 clearTimeout(timer);
