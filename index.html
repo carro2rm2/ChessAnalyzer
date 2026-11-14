@@ -815,21 +815,32 @@ async function predictMatchup() {
         status.textContent = "Comparing performance and move patterns...";
         const A = predictorStats(gamesA), B = predictorStats(gamesB);
         const difference = A.strength - B.strength;
+        // Elo expected score represents win probability + half the draw probability.
+        // Limit the draw estimate so neither player's win probability can go below zero.
         const expectedScoreA = 1 / (1 + Math.pow(10,-difference/400));
-        const draw = .25 * Math.exp(-Math.abs(difference)/500);
-        const winA = Math.max(0,Math.min(1,expectedScoreA-draw/2));
-        const winB = 1-winA-draw;
+        const rawDraw = .25 * Math.exp(-Math.abs(difference)/500);
+        const maxValidDraw = 2 * Math.min(expectedScoreA, 1 - expectedScoreA);
+        const draw = Math.max(0, Math.min(rawDraw, maxValidDraw, 1));
+        let winA = expectedScoreA - draw / 2;
+        let winB = (1 - expectedScoreA) - draw / 2;
+        // Clamp tiny floating-point edge cases, then normalize to exactly 100%.
+        winA = Math.max(0, winA);
+        winB = Math.max(0, winB);
+        const probabilityTotal = winA + draw + winB;
+        const normalizedWinA = winA / probabilityTotal;
+        const normalizedDraw = draw / probabilityTotal;
+        const normalizedWinB = winB / probabilityTotal;
         const pct = x => (x*100).toFixed(1)+"%";
-        document.getElementById("probA").textContent=pct(winA);
-        document.getElementById("probDraw").textContent=pct(draw);
-        document.getElementById("probB").textContent=pct(winB);
+        document.getElementById("probA").textContent=pct(normalizedWinA);
+        document.getElementById("probDraw").textContent=pct(normalizedDraw);
+        document.getElementById("probB").textContent=pct(normalizedWinB);
         document.getElementById("probALabel").textContent=a+" wins";
         document.getElementById("probBLabel").textContent=b+" wins";
         document.getElementById("tablePlayerA").textContent=a;
         document.getElementById("tablePlayerB").textContent=b;
-        document.getElementById("barA").style.width=(winA*100)+"%";
-        document.getElementById("barDraw").style.width=(draw*100)+"%";
-        document.getElementById("barB").style.width=(winB*100)+"%";
+        document.getElementById("barA").style.width=(normalizedWinA*100)+"%";
+        document.getElementById("barDraw").style.width=(normalizedDraw*100)+"%";
+        document.getElementById("barB").style.width=(normalizedWinB*100)+"%";
         const favorite = difference === 0 ? "The matchup looks very even." : (difference>0 ? a+" is the model's favorite." : b+" is the model's favorite.");
         document.getElementById("predictionHeadline").textContent=favorite;
         document.getElementById("predictionSummary").textContent =
