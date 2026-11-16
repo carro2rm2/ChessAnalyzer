@@ -929,6 +929,10 @@ async function predictMatchup() {
 
 let comparisonGames = [];
 
+function formatRate(value) {
+    return Number.isFinite(value) ? value.toFixed(2) : "—";
+}
+
 function makeStretchSummary(sample) {
     const wins = sample.filter(g => g.result === "Win").length;
     const draws = sample.filter(g => g.result === "Draw").length;
