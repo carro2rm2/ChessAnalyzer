@@ -307,6 +307,18 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
         <p id="aggregateExplanation" class="review-note"></p>
     </div>
 
+    <div class="panel">
+        <h2>Move-pattern trends · Last 100 games</h2>
+        <p class="review-note">This treats the entire loaded sample as one stretch and uses the exact same calculations as Stretch Comparison. You and your opponents are measured separately.</p>
+        <div class="stretch-table-wrap">
+            <table class="stretch-table">
+                <thead><tr><th>Measure</th><th>You</th><th>Opponents</th></tr></thead>
+                <tbody id="overallPatternRows"><tr><td colspan="3">Analyzing PGNs…</td></tr></tbody>
+            </table>
+        </div>
+        <p id="overallPatternStatus" class="engine-status">Waiting for game analysis.</p>
+    </div>
+
     <div class="panel stretch-panel">
         <h2>Stretch Comparison</h2>
         <p class="review-note">Choose any two stretches from the loaded games. Game numbers run oldest to newest. The ranges can be different lengths, but cannot overlap.</p>
@@ -1307,6 +1319,45 @@ function summarizePgnStretch(games) {
     return {you:summarize(side.you), opp:summarize(side.opp), games:parsedGames, requested:games.length, moves:parsedMoves};
 }
 
+function renderOverallPgnPatterns(games) {
+    // The Trends panel intentionally summarizes the complete loaded sample as
+    // one stretch, using the same function and metric definitions as comparison.
+    const overall = summarizePgnStretch(games);
+    const fmt = (value, suffix="") => value === null || value === undefined || !Number.isFinite(value)
+        ? "—" : value.toFixed(1) + suffix;
+    const cell = (data, metric) => {
+        if (!data) return "—";
+        if (metric === "safety") return fmt(data.safety, "%");
+        if (metric === "aggression") return fmt(data.aggression);
+        if (metric === "quality") return data.quality === null ? "—" : fmt(data.quality) + " (" + data.qualityCount + " moves)";
+        if (data.checkRate === null) return "—";
+        return fmt(data.checkRate, "%") + " (" + data.checks + " checks)";
+    };
+    const rows = [
+        ["Move safety (not capturable)", cell(overall.you,"safety"), cell(overall.opp,"safety")],
+        ["Engine-free positional move quality (0–100)", cell(overall.you,"quality"), cell(overall.opp,"quality")],
+        ["Aggressiveness (heuristic points/move)", cell(overall.you,"aggression"), cell(overall.opp,"aggression")],
+        ["Checks followed by net material gain/mate", cell(overall.you,"checks"), cell(overall.opp,"checks")],
+        ["Moves parsed", overall.you ? overall.you.moves : 0, overall.opp ? overall.opp.moves : 0],
+        ["Games with PGNs", overall.games + "/" + overall.requested, overall.games + "/" + overall.requested]
+    ];
+    const tbody = document.getElementById("overallPatternRows");
+    tbody.innerHTML = "";
+    rows.forEach(row => {
+        const tr = document.createElement("tr");
+        row.forEach((value, index) => {
+            const td = document.createElement("td");
+            td.textContent = value;
+            if (index === 0) td.style.fontWeight = "bold";
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+    document.getElementById("overallPatternStatus").textContent =
+        "PGN analysis complete: " + overall.games + " of " + overall.requested +
+        " loaded games parsed. The figures above use the same metric definitions as Stretch Comparison.";
+}
+
 function renderPgnPatternComparison(aGames, bGames) {
     const a = summarizePgnStretch(aGames);
     const b = summarizePgnStretch(bGames);
@@ -1461,6 +1512,7 @@ function displayResults(username, games, timeClass) {
 
     document.getElementById("results").style.display = "block";
     buildMoveReview(games);
+    renderOverallPgnPatterns(games);
     buildStretchComparison(games);
 }
 </script>
