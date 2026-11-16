@@ -124,6 +124,20 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 .prediction-note { color:#b8c7d5; font-size:13px; line-height:1.55; }
 @media(max-width:550px) { .matchup-inputs {grid-template-columns:1fr;} .probability-grid {gap:6px;} .probability strong {font-size:22px;} }
 
+
+.stretch-panel { border: 1px solid #397b68; }
+.stretch-controls { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:end; }
+.stretch-controls label { display:block; color:#c7d3df; font-size:14px; }
+.stretch-controls select { margin:7px 0 12px; }
+.stretch-table-wrap { overflow-x:auto; }
+.stretch-table { min-width:560px; }
+.stretch-table th, .stretch-table td { text-align:center; }
+.stretch-table th:first-child, .stretch-table td:first-child { text-align:left; }
+.stretch-difference { font-weight:bold; }
+.stretch-interpretation { line-height:1.6; color:#d7e0e8; }
+.stretch-meta { color:#aab7c4; font-size:13px; line-height:1.5; }
+@media(max-width:550px) { .stretch-controls { grid-template-columns:1fr; } }
+
 </style>
 </head>
 <body>
@@ -286,6 +300,33 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
             <div><strong>—</strong><span class="muted">Captures</span></div>
         </div>
         <p id="aggregateExplanation" class="review-note"></p>
+    </div>
+
+    <div class="panel stretch-panel">
+        <h2>Stretch Comparison</h2>
+        <p class="review-note">Compare your latest 23 rated games with an earlier 23-game stretch. ChessAnalyzer retrieves the games automatically from Chess.com's public game archives—no PGN pasting required.</p>
+        <div class="stretch-controls">
+            <div>
+                <label for="stretchEarlier">Earlier stretch</label>
+                <select id="stretchEarlier" aria-label="Choose earlier 23-game stretch"></select>
+            </div>
+            <div>
+                <label for="stretchRecent">Recent stretch</label>
+                <select id="stretchRecent" disabled><option>Most recent 23 games</option></select>
+            </div>
+        </div>
+        <p id="stretchStatus" class="stretch-meta">Analyzing game stretches…</p>
+        <div id="stretchResults" style="display:none">
+            <div class="stretch-table-wrap">
+                <table class="stretch-table">
+                    <thead><tr><th>Metric</th><th id="stretchEarlierLabel">Earlier stretch</th><th id="stretchRecentLabel">Recent 23</th><th>Difference</th></tr></thead>
+                    <tbody id="stretchRows"></tbody>
+                </table>
+            </div>
+            <h3>What changed?</h3>
+            <div id="stretchInterpretation" class="stretch-interpretation"></div>
+            <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. Checks are counted, not automatically treated as good or aggressive. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder. Engine accuracy and a full threat/fork-based aggressiveness score are not available in this version.</p>
+        </div>
     </div>
 
     <div class="panel">
@@ -874,6 +915,181 @@ async function predictMatchup() {
     } finally { button.disabled=false; }
 }
 
+
+const STRETCH_SIZE = 23;
+let stretchWindows = [];
+
+function summarizeStretch(games) {
+    const wins = games.filter(g => g.result === "Win").length;
+    const draws = games.filter(g => g.result === "Draw").length;
+    const losses = games.length - wins - draws;
+    const score = games.reduce((sum, g) => sum + g.score, 0) / games.length;
+    const avgPlayer = average(games.map(g => g.playerRating));
+    const avgOpponent = average(games.map(g => g.opponentRating));
+    const parsed = games.map(g => g.pgn ? parseGameForReview(g.pgn) : null).filter(Boolean);
+    const totals = parsed.reduce((sum, item) => {
+        for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) {
+            sum[key] += item.totals[key] || 0;
+        }
+        return sum;
+    }, { moves:0, checks:0, captures:0, exposed:0, castles:0, promotions:0 });
+    const rate = key => totals.moves ? totals[key] / totals.moves * 20 : null;
+    return {
+        games: games.length, wins, draws, losses, score,
+        performance: performanceRating(games),
+        avgPlayer, avgOpponent, parsed: parsed.length,
+        moves: totals.moves,
+        checks20: rate("checks"),
+        captures20: rate("captures"),
+        exposed20: rate("exposed"),
+        castlesPerGame: parsed.length ? totals.castles / parsed.length : null,
+        promotionsPerGame: parsed.length ? totals.promotions / parsed.length : null,
+        start: games[0].date, end: games[games.length - 1].date
+    };
+}
+
+function formatRate(value) {
+    return value === null ? "Unavailable" : value.toFixed(2);
+}
+
+function buildStretchComparison(games) {
+    const status = document.getElementById("stretchStatus");
+    const results = document.getElementById("stretchResults");
+    const select = document.getElementById("stretchEarlier");
+    results.style.display = "none";
+    select.innerHTML = "";
+    if (games.length < STRETCH_SIZE * 2) {
+        status.textContent = "Need at least 46 rated games to compare two separate 23-game stretches. Found " + games.length + ".";
+        return;
+    }
+
+    const summaries = [];
+    // Parse each game's PGN once, then reuse the parsed event totals for all candidate windows.
+    const parsedByGame = games.map(g => g.pgn ? parseGameForReview(g.pgn) : null);
+    const makeSummary = (start, end) => {
+        const sample = games.slice(start, end);
+        const base = summarizeStretch(sample);
+        const parsed = parsedByGame.slice(start, end).filter(Boolean);
+        const totals = parsed.reduce((sum, item) => {
+            for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) sum[key] += item.totals[key] || 0;
+            return sum;
+        }, {moves:0,checks:0,captures:0,exposed:0,castles:0,promotions:0});
+        base.parsed = parsed.length;
+        base.moves = totals.moves;
+        base.checks20 = totals.moves ? totals.checks / totals.moves * 20 : null;
+        base.captures20 = totals.moves ? totals.captures / totals.moves * 20 : null;
+        base.exposed20 = totals.moves ? totals.exposed / totals.moves * 20 : null;
+        base.castlesPerGame = parsed.length ? totals.castles / parsed.length : null;
+        base.promotionsPerGame = parsed.length ? totals.promotions / parsed.length : null;
+        return base;
+    };
+
+    const recentStart = games.length - STRETCH_SIZE;
+    const recent = makeSummary(recentStart, games.length);
+    for (let start = 0; start <= recentStart - STRETCH_SIZE; start++) {
+        const summary = makeSummary(start, start + STRETCH_SIZE);
+        summaries.push({start, end:start + STRETCH_SIZE, summary});
+    }
+    // "Best earlier stretch" means the highest score percentage; performance rating breaks ties.
+    summaries.sort((a,b) => b.summary.score - a.summary.score || b.summary.performance - a.summary.performance);
+    stretchWindows = summaries;
+    summaries.forEach((item, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        const s = item.summary;
+        option.textContent = s.start.toLocaleDateString() + " – " + s.end.toLocaleDateString() +
+            " · " + s.wins + "W-" + s.draws + "D-" + s.losses + "L · " + (s.score*100).toFixed(1) + "%";
+        select.appendChild(option);
+    });
+    select.value = "0";
+    document.getElementById("stretchRecentLabel").textContent =
+        recent.start.toLocaleDateString() + " – " + recent.end.toLocaleDateString();
+    status.textContent = "Found " + summaries.length + " non-overlapping earlier windows. The default selection is your strongest earlier 23-game result stretch.";
+    renderStretchComparison(0, recent);
+    select.onchange = () => renderStretchComparison(Number(select.value), recent);
+}
+
+function renderStretchComparison(index, recent) {
+    const earlierWindow = stretchWindows[index];
+    if (!earlierWindow) return;
+    const earlier = earlierWindow.summary;
+    const dateRange = s => s.start.toLocaleDateString() + " – " + s.end.toLocaleDateString();
+    document.getElementById("stretchEarlierLabel").textContent = dateRange(earlier);
+    document.getElementById("stretchRecentLabel").textContent = dateRange(recent);
+    const pct = x => (x * 100).toFixed(1) + "%";
+    const rows = [
+        ["Record", earlier.wins+"W-"+earlier.draws+"D-"+earlier.losses+"L", recent.wins+"W-"+recent.draws+"D-"+recent.losses+"L", null],
+        ["Score percentage", pct(earlier.score), pct(recent.score), (recent.score-earlier.score)*100],
+        ["Performance rating (estimate)", Math.round(earlier.performance), Math.round(recent.performance), recent.performance-earlier.performance],
+        ["Average player rating", Math.round(earlier.avgPlayer), Math.round(recent.avgPlayer), recent.avgPlayer-earlier.avgPlayer],
+        ["Average opponent rating", Math.round(earlier.avgOpponent), Math.round(recent.avgOpponent), recent.avgOpponent-earlier.avgOpponent],
+        ["Games with parsed PGNs", earlier.parsed+"/23", recent.parsed+"/23", null],
+        ["Checks per 20 half-moves", formatRate(earlier.checks20), formatRate(recent.checks20), earlier.checks20===null||recent.checks20===null?null:recent.checks20-earlier.checks20],
+        ["Captures per 20 half-moves", formatRate(earlier.captures20), formatRate(recent.captures20), earlier.captures20===null||recent.captures20===null?null:recent.captures20-earlier.captures20],
+        ["Pieces exposed per 20 half-moves", formatRate(earlier.exposed20), formatRate(recent.exposed20), earlier.exposed20===null||recent.exposed20===null?null:recent.exposed20-earlier.exposed20],
+        ["Castles per parsed game", formatRate(earlier.castlesPerGame), formatRate(recent.castlesPerGame), earlier.castlesPerGame===null||recent.castlesPerGame===null?null:recent.castlesPerGame-earlier.castlesPerGame],
+        ["Promotions per parsed game", formatRate(earlier.promotionsPerGame), formatRate(recent.promotionsPerGame), earlier.promotionsPerGame===null||recent.promotionsPerGame===null?null:recent.promotionsPerGame-earlier.promotionsPerGame]
+    ];
+    const tbody = document.getElementById("stretchRows");
+    tbody.innerHTML = "";
+    rows.forEach(row => {
+        const tr = document.createElement("tr");
+        row.forEach((value, i) => {
+            const td = document.createElement("td");
+            if (i === 0) td.textContent = value;
+            else if (i === 3) {
+                if (value === null) td.textContent = "—";
+                else {
+                    const rounded = Math.round(value * 10) / 10;
+                    td.textContent = (rounded > 0 ? "+" : "") + rounded + (row[0] === "Score percentage" ? " pp" : "");
+                    td.className = "stretch-difference " + (rounded > 0 ? "positive" : rounded < 0 ? "negative" : "neutral");
+                }
+            } else td.textContent = value;
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+
+    const notes = [];
+    const scoreDiff = recent.score - earlier.score;
+    const perfDiff = recent.performance - earlier.performance;
+    notes.push(scoreDiff < -0.05
+        ? "Your recent score rate is down " + Math.abs(scoreDiff*100).toFixed(1) + " percentage points."
+        : scoreDiff > 0.05
+            ? "Your recent score rate is up " + (scoreDiff*100).toFixed(1) + " percentage points."
+            : "Your score rates are very similar across the two stretches.");
+    notes.push((perfDiff < -20
+        ? "Your estimated performance against the opposition is also lower by " + Math.abs(perfDiff) + " points."
+        : perfDiff > 20
+            ? "Your estimated performance is higher by " + perfDiff + " points."
+            : "Estimated performance is relatively close between the stretches.") +
+        " This estimate uses opponent ratings and results; it is not an official Chess.com rating.");
+    if (earlier.exposed20 !== null && recent.exposed20 !== null) {
+        const d = recent.exposed20 - earlier.exposed20;
+        notes.push(d > 0.35
+            ? "You are leaving pieces immediately capturable more often in the recent sample (" + d.toFixed(2) + " more per 20 half-moves). That is a concrete tactical-safety signal to review."
+            : d < -0.35
+                ? "The recent sample has fewer immediately capturable moved pieces (" + Math.abs(d).toFixed(2) + " fewer per 20 half-moves)."
+                : "The exposed-piece flag rate is broadly similar.");
+    }
+    if (earlier.captures20 !== null && recent.captures20 !== null) {
+        const d = recent.captures20 - earlier.captures20;
+        notes.push(Math.abs(d) > 0.4
+            ? "Capture frequency changed by " + d.toFixed(2) + " per 20 half-moves. This describes game activity, not necessarily better or worse attacking play."
+            : "Capture frequency is similar; this alone cannot establish whether your initiative has changed.");
+    }
+    if (recent.parsed < 18 || earlier.parsed < 18) {
+        notes.push("Move-pattern comparisons are based on incomplete PGN coverage, so treat those rates cautiously.");
+    }
+    document.getElementById("stretchInterpretation").innerHTML = "";
+    notes.forEach(note => {
+        const p = document.createElement("p");
+        p.textContent = note;
+        document.getElementById("stretchInterpretation").appendChild(p);
+    });
+    document.getElementById("stretchResults").style.display = "block";
+}
+
 function displayResults(username, games, timeClass) {
     const wins = games.filter(g => g.result === "Win").length;
     const draws = games.filter(g => g.result === "Draw").length;
@@ -989,6 +1205,7 @@ function displayResults(username, games, timeClass) {
 
     document.getElementById("results").style.display = "block";
     buildMoveReview(games);
+    buildStretchComparison(games);
 }
 </script>
 </body>
