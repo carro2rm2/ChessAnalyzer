@@ -356,7 +356,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
                     </table>
                 </div>
                 <p id="patternStatus" class="engine-status">Waiting for stretch comparison.</p>
-                <p class="engine-note"><strong>Engine-free positional move quality (0–100)</strong> compares the position before each move with the position up to four plies later, using material, piece placement, pawn structure, king exposure, and legal mobility. Scores are centered at 50; higher means the resulting position looks better for the mover. It follows the actual game line, so opponent decisions influence the score. This is a lightweight heuristic, not engine accuracy or a best-move comparison. <strong>Move safety</strong> is the percentage of moves where the piece just moved was not immediately legally capturable. It is a simple tactical-safety flag. <strong>Aggressiveness</strong> is a custom heuristic in points per move based on captures, forward/central pawn advances, moves toward the enemy king, and checks that are followed by a capture or checkmate. <strong>Check follow-through</strong> is the percentage of checks followed by at least a one-point net material gain (a pawn or more) after the opponent has had a chance to reply, within the checking player's next three turns, or checkmate. Material is valued pawn=1, knight/bishop=3, rook=5, queen=9. This is a material-based proxy, not proof that the check was objectively best. Forks, pins, threats, and positional pressure are not fully measured.</p>
+                <p class="engine-note"><strong>Engine-free positional move quality (0–100)</strong> compares the position immediately before a move with the position immediately after it, before the opponent replies. It uses material, piece placement, pawn structure, and king exposure. Scores are centered at 50; higher means the move improved the position according to this simple heuristic. Because it stops before the opponent's reply, their subsequent choices do not affect this score. It is not engine accuracy or a best-move comparison, and it can miss tactics and longer-term plans. <strong>Move safety</strong> is the percentage of moves where the piece just moved was not immediately legally capturable. It is a simple tactical-safety flag. <strong>Aggressiveness</strong> is a custom heuristic in points per move based on captures, forward/central pawn advances, moves toward the enemy king, and checks that are followed by a capture or checkmate. <strong>Check follow-through</strong> is the percentage of checks followed by at least a one-point net material gain (a pawn or more) after the opponent has had a chance to reply, within the checking player's next three turns, or checkmate. Material is valued pawn=1, knight/bishop=3, rook=5, queen=9. This is a material-based proxy, not proof that the check was objectively best. Forks, pins, threats, and positional pressure are not fully measured.</p>
             </div>
             <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder.</p>
         </div>
@@ -1206,28 +1206,27 @@ function positionalEvaluation(fen, color) {
             }
         }
     }
-    // Mobility is measured for the side to move in the recorded position.
+    // Reward a check delivered by this move, or penalize being in check
+    // before the move. Do not use legal-move counts here: whose turn it is
+    // changes after every move and would make before/after scores incomparable.
     try {
         const position = new Chess(fen);
-        const legalMoves = position.moves({verbose:true}).length;
-        const turnSign = fen.split(" ")[1] === color ? 1 : -1;
-        score += turnSign * Math.min(30, legalMoves) * 0.012;
-        if (position.in_check()) score += turnSign * -0.35;
+        if (position.in_check()) {
+            const turnSign = fen.split(" ")[1] === color ? 1 : -1;
+            score += turnSign * -0.35;
+        }
     } catch (e) {}
     return score;
 }
 
 function engineFreeMoveQuality(review, moveIndex) {
     const move = review.history[moveIndex];
-    if (!move) return null;
+    if (!move || !review.positions[moveIndex + 1]) return null;
     const color = move.color;
     const before = positionalEvaluation(review.positions[moveIndex], color);
-    // Follow the actual game for up to four plies: the move, opponent reply,
-    // and one further move by each side. This gives sacrifices and attacks time
-    // to develop, while keeping the horizon bounded and transparent.
-    const endIndex = Math.min(moveIndex + 4, review.history.length);
-    if (endIndex < moveIndex + 2) return null;
-    const after = positionalEvaluation(review.positions[endIndex], color);
+    // Evaluate immediately after this move, before the opponent replies.
+    // This isolates the board change made by the move itself.
+    const after = positionalEvaluation(review.positions[moveIndex + 1], color);
     const delta = after - before;
     // Convert positional change into a bounded 0-100 estimate centered at 50.
     return Math.max(0, Math.min(100, 50 + delta * 8));
