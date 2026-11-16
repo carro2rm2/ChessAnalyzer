@@ -347,7 +347,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
                     </table>
                 </div>
                 <p id="patternStatus" class="engine-status">Waiting for stretch comparison.</p>
-                <p class="engine-note"><strong>Move safety</strong> is the percentage of moves where the piece just moved was not immediately legally capturable. It is a simple tactical-safety flag, not chess accuracy. <strong>Aggressiveness</strong> is a custom heuristic in points per move based on captures, forward/central pawn advances, moves toward the enemy king, and checks that are followed by a capture or checkmate. <strong>Check follow-through</strong> is the percentage of checks followed by at least a one-point net material gain (a pawn or more) after the opponent has had a chance to reply, within the checking player's next three turns, or checkmate. Material is valued pawn=1, knight/bishop=3, rook=5, queen=9. This is a material-based proxy, not proof that the check was objectively best. Forks, pins, threats, and positional pressure are not fully measured.</p>
+                <p class="engine-note"><strong>Engine-free positional move quality (0–100)</strong> compares the position before each move with the position up to four plies later, using material, piece placement, pawn structure, king exposure, and legal mobility. Scores are centered at 50; higher means the resulting position looks better for the mover. It follows the actual game line, so opponent decisions influence the score. This is a lightweight heuristic, not engine accuracy or a best-move comparison. <strong>Move safety</strong> is the percentage of moves where the piece just moved was not immediately legally capturable. It is a simple tactical-safety flag. <strong>Aggressiveness</strong> is a custom heuristic in points per move based on captures, forward/central pawn advances, moves toward the enemy king, and checks that are followed by a capture or checkmate. <strong>Check follow-through</strong> is the percentage of checks followed by at least a one-point net material gain (a pawn or more) after the opponent has had a chance to reply, within the checking player's next three turns, or checkmate. Material is valued pawn=1, knight/bishop=3, rook=5, queen=9. This is a material-based proxy, not proof that the check was objectively best. Forks, pins, threats, and positional pressure are not fully measured.</p>
             </div>
             <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder.</p>
         </div>
@@ -1135,10 +1135,99 @@ function materialBalance(fen, color) {
     return color === "w" ? balance : -balance;
 }
 
+function positionalEvaluation(fen, color) {
+    // Lightweight static evaluation: material, piece placement, pawn structure,
+    // king exposure, and legal mobility. This is a heuristic, not engine analysis.
+    const boardText = fen.split(" ")[0];
+    const rows = boardText.split("/");
+    const pieces = [];
+    const pawnsByFile = {w:Array(8).fill(0), b:Array(8).fill(0)};
+    let score = 0;
+    for (let row = 0; row < 8; row++) {
+        let file = 0;
+        for (const ch of rows[row]) {
+            if (/\d/.test(ch)) {
+                file += Number(ch);
+                continue;
+            }
+            const side = ch === ch.toUpperCase() ? "w" : "b";
+            const type = ch.toLowerCase();
+            const square = String.fromCharCode(97 + file) + (8 - row);
+            const sign = side === color ? 1 : -1;
+            const value = PIECE_VALUES[type] || 0;
+            score += sign * value;
+            const centerDistance = Math.abs(file - 3.5) + Math.abs((7 - row) - 3.5);
+            if (type === "n" || type === "b") score += sign * (0.22 * (3.5 - centerDistance / 2));
+            if (type === "q") score += sign * (0.06 * (3.5 - centerDistance / 2));
+            if (type === "r" && (row === 1 || row === 6)) score += sign * 0.12;
+            if (type === "p") {
+                const advance = side === "w" ? 6 - row : row - 1;
+                score += sign * Math.max(0, advance) * 0.035;
+                pawnsByFile[side][file]++;
+            }
+            pieces.push({side,type,square,file,row});
+            file++;
+        }
+    }
+    // Penalize doubled pawns and reward connected central pawn presence.
+    for (const side of ["w","b"]) {
+        const sign = side === color ? 1 : -1;
+        for (let file = 0; file < 8; file++) {
+            if (pawnsByFile[side][file] > 1) score -= sign * 0.16 * (pawnsByFile[side][file] - 1);
+            if (pawnsByFile[side][file] && file >= 2 && file <= 5) score += sign * 0.035;
+        }
+    }
+    const ownKing = findKingSquare(fen, color);
+    const enemyKing = findKingSquare(fen, color === "w" ? "b" : "w");
+    if (ownKing) {
+        const kingFile = ownKing.charCodeAt(0) - 97;
+        const kingRank = Number(ownKing[1]);
+        const shieldRank = color === "w" ? kingRank + 1 : kingRank - 1;
+        let shield = 0;
+        for (const p of pieces) {
+            if (p.side === color && p.type === "p" &&
+                Math.abs(p.file - kingFile) <= 1 &&
+                Number(p.square[1]) === shieldRank) shield++;
+        }
+        score += Math.min(3, shield) * 0.10;
+        for (const p of pieces) {
+            if (p.side !== color && p.type !== "p" && p.type !== "k") {
+                const distance = squareDistance(ownKing, p.square);
+                if (distance <= 2) score -= (3 - distance) * 0.10;
+            }
+        }
+    }
+    // Mobility is measured for the side to move in the recorded position.
+    try {
+        const position = new Chess(fen);
+        const legalMoves = position.moves({verbose:true}).length;
+        const turnSign = fen.split(" ")[1] === color ? 1 : -1;
+        score += turnSign * Math.min(30, legalMoves) * 0.012;
+        if (position.in_check()) score += turnSign * -0.35;
+    } catch (e) {}
+    return score;
+}
+
+function engineFreeMoveQuality(review, moveIndex) {
+    const move = review.history[moveIndex];
+    if (!move) return null;
+    const color = move.color;
+    const before = positionalEvaluation(review.positions[moveIndex], color);
+    // Follow the actual game for up to four plies: the move, opponent reply,
+    // and one further move by each side. This gives sacrifices and attacks time
+    // to develop, while keeping the horizon bounded and transparent.
+    const endIndex = Math.min(moveIndex + 4, review.history.length);
+    if (endIndex < moveIndex + 2) return null;
+    const after = positionalEvaluation(review.positions[endIndex], color);
+    const delta = after - before;
+    // Convert positional change into a bounded 0-100 estimate centered at 50.
+    return Math.max(0, Math.min(100, 50 + delta * 8));
+}
+
 function summarizePgnStretch(games) {
     const side = {
-        you: {moves:0, exposed:0, aggression:0, checks:0, effectiveChecks:0},
-        opp: {moves:0, exposed:0, aggression:0, checks:0, effectiveChecks:0}
+        you: {moves:0, exposed:0, aggression:0, checks:0, effectiveChecks:0, qualityTotal:0, qualityCount:0},
+        opp: {moves:0, exposed:0, aggression:0, checks:0, effectiveChecks:0, qualityTotal:0, qualityCount:0}
     };
     let parsedGames = 0;
     let parsedMoves = 0;
@@ -1152,6 +1241,11 @@ function summarizePgnStretch(games) {
             const bucket = move.color === ownColor ? side.you : side.opp;
             const detail = review.details[i];
             const exposed = !!(detail && detail.events.some(event => event.includes("can currently be captured")));
+            const quality = engineFreeMoveQuality(review, i);
+            if (quality !== null) {
+                bucket.qualityTotal += quality;
+                bucket.qualityCount++;
+            }
             const isCheck = /[+#]$/.test(move.san);
             let checkFollowThrough = false;
             if (isCheck) {
@@ -1204,6 +1298,8 @@ function summarizePgnStretch(games) {
     const summarize = bucket => bucket.moves ? {
         safety: 100 * (bucket.moves - bucket.exposed) / bucket.moves,
         aggression: bucket.aggression / bucket.moves,
+        quality: bucket.qualityCount ? bucket.qualityTotal / bucket.qualityCount : null,
+        qualityCount: bucket.qualityCount,
         checkRate: bucket.checks ? 100 * bucket.effectiveChecks / bucket.checks : null,
         checks: bucket.checks,
         moves: bucket.moves
@@ -1220,11 +1316,13 @@ function renderPgnPatternComparison(aGames, bGames) {
         if (!data) return "—";
         if (metric === "safety") return fmt(data.safety, "%");
         if (metric === "aggression") return fmt(data.aggression);
+        if (metric === "quality") return data.quality === null ? "—" : fmt(data.quality) + " (" + data.qualityCount + " moves)";
         if (data.checkRate === null) return "—";
         return fmt(data.checkRate, "%") + " (" + data.checks + " checks)";
     };
     const rows = [
         ["Move safety (not capturable)", cell(a.you,"safety"), cell(a.opp,"safety"), cell(b.you,"safety"), cell(b.opp,"safety")],
+        ["Engine-free positional move quality (0–100)", cell(a.you,"quality"), cell(a.opp,"quality"), cell(b.you,"quality"), cell(b.opp,"quality")],
         ["Aggressiveness (heuristic points/move)", cell(a.you,"aggression"), cell(a.opp,"aggression"), cell(b.you,"aggression"), cell(b.opp,"aggression")],
         ["Checks followed by net material gain/mate", cell(a.you,"checks"), cell(a.opp,"checks"), cell(b.you,"checks"), cell(b.opp,"checks")],
         ["Moves parsed", a.you ? a.you.moves : 0, a.opp ? a.opp.moves : 0, b.you ? b.you.moves : 0, b.opp ? b.opp.moves : 0],
