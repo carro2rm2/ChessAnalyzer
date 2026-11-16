@@ -968,7 +968,17 @@ function buildStretchComparison(games) {
     const parsedByGame = games.map(g => g.pgn ? parseGameForReview(g.pgn) : null);
     const makeSummary = (start, end) => {
         const sample = games.slice(start, end);
-        const base = summarizeStretch(sample);
+        const wins = sample.filter(g => g.result === "Win").length;
+        const draws = sample.filter(g => g.result === "Draw").length;
+        const losses = sample.length - wins - draws;
+        const base = {
+            games: sample.length, wins, draws, losses,
+            score: sample.reduce((sum, g) => sum + g.score, 0) / sample.length,
+            performance: performanceRating(sample),
+            avgPlayer: average(sample.map(g => g.playerRating)),
+            avgOpponent: average(sample.map(g => g.opponentRating)),
+            start: sample[0].date, end: sample[sample.length - 1].date
+        };
         const parsed = parsedByGame.slice(start, end).filter(Boolean);
         const totals = parsed.reduce((sum, item) => {
             for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) sum[key] += item.totals[key] || 0;
