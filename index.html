@@ -961,8 +961,10 @@ function buildStretchComparison(games) {
         const input = document.getElementById(id);
         input.max = String(max);
     });
-    const aStart = 1, aEnd = Math.min(23, max);
-    const bEnd = max, bStart = Math.max(aEnd + 1, max - 22);
+    const aStart = 1;
+    const aEnd = max >= 46 ? 23 : Math.floor(max / 2);
+    const bEnd = max;
+    const bStart = max >= 46 ? max - 22 : aEnd + 1;
     document.getElementById("stretchAStart").value = aStart;
     document.getElementById("stretchAEnd").value = aEnd;
     document.getElementById("stretchBStart").value = bStart;
@@ -998,10 +1000,7 @@ function compareSelectedStretches() {
         bStart + "–" + bEnd + " (" + recent.games + " games). Ranges do not overlap.";
 }
 
-function renderStretchComparison(index, recent) {
-    const earlierWindow = stretchWindows[index];
-    if (!earlierWindow) return;
-    const earlier = earlierWindow.summary;
+function renderStretchComparison(earlier, recent) {
     const dateRange = s => s.start.toLocaleDateString() + " – " + s.end.toLocaleDateString();
     document.getElementById("stretchEarlierLabel").textContent = "A · " + earlier.games + " games · " + dateRange(earlier);
     document.getElementById("stretchRecentLabel").textContent = "B · " + recent.games + " games · " + dateRange(recent);
