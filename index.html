@@ -349,7 +349,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
                         <tbody id="engineRows"></tbody>
                     </table>
                 </div>
-                <p class="engine-note">Accuracy is an engine-estimated score based on centipawn loss, not Chess.com’s proprietary accuracy. Aggressiveness is a custom heuristic (points per move): it rewards captures, forward/central pawn play, moves toward the enemy king, and engine-confirmed initiative; checks earn credit only when the position improves. The check-success rate counts checks followed by at least a 0.5-pawn improvement for the checking side within the next three plies. Small samples and shallow engine depth can make these estimates noisy.</p>
+                <p class="engine-note">Accuracy is an engine-estimated score based on centipawn loss, not Chess.com’s proprietary accuracy. Aggressiveness is a custom heuristic (points per move): it rewards captures, forward/central pawn play, moves toward the enemy king, and engine-confirmed initiative; checks earn credit only when the position improves. The check-success rate counts checks followed by at least a 0.5-pawn improvement for the checking side within up to three of that player's subsequent turns (2, 4, or 6 plies). Checks without enough follow-up play are excluded. Small samples and shallow engine depth can make these estimates noisy.</p>
             </div>
             <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder.</p>
         </div>
@@ -1226,11 +1226,18 @@ async function analyzeStretchEngine(games, label, progress) {
             let checkWorked = false;
             const isCheck = /[+#]$/.test(move.san);
             if (isCheck) {
-                bucket.checks++;
-                if (i + 3 < evals.length) {
-                    const laterForChecker = -evals[i+3];
-                    checkWorked = laterForChecker - pre >= 0.5;
-                    if (checkWorked) bucket.successfulChecks++;
+                if (/#$/.test(move.san)) {
+                    bucket.checks++;
+                    checkWorked = true;
+                    bucket.successfulChecks++;
+                } else {
+                    const followUpOffsets = [2,4,6].filter(offset => i + offset < evals.length);
+                    if (followUpOffsets.length) {
+                        bucket.checks++;
+                        const bestFollowUp = Math.max(...followUpOffsets.map(offset => evals[i+offset]));
+                        checkWorked = bestFollowUp - pre >= 0.5;
+                        if (checkWorked) bucket.successfulChecks++;
+                    }
                 }
             }
             bucket.moves++;
