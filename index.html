@@ -553,6 +553,16 @@ const PIECE_SYMBOLS = {
 };
 const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
+const parsedReviewCache = new Map();
+
+function getParsedGameReview(pgn) {
+    if (!pgn) return null;
+    if (parsedReviewCache.has(pgn)) return parsedReviewCache.get(pgn);
+    const result = parseGameForReview(pgn);
+    parsedReviewCache.set(pgn, result);
+    return result;
+}
+
 function parseGameForReview(pgn) {
     if (!window.Chess || !pgn) return null;
     try {
@@ -565,8 +575,6 @@ function parseGameForReview(pgn) {
         let captures = 0, checks = 0, castles = 0, promotions = 0, exposed = 0;
 
         history.forEach((move, index) => {
-            const legalBefore = replay.moves({ verbose: true });
-            const otherCaptures = legalBefore.filter(m => m.captured && m.san !== move.san);
             replay.move(move.san);
             const events = [];
             if (move.captured) {
@@ -592,10 +600,6 @@ function parseGameForReview(pgn) {
             if (nextCaptures.length && !replay.game_over()) {
                 exposed++;
                 events.push("The piece that just moved can currently be captured on " + move.to + ". Check whether it is defended or whether the capture would be tactically unsafe.");
-            }
-            if (otherCaptures.length && !move.captured && !replay.game_over()) {
-                const candidates = otherCaptures.slice(0, 3).map(m => m.san);
-                events.push("Other legal captures were available before this move: " + candidates.join(", ") + (otherCaptures.length > 3 ? "…" : "") + ". They are candidates to inspect, not automatically missed wins.");
             }
             if (!events.length) events.push("No special event detected by this basic review. That does not mean the move was good or bad.");
             details.push({
@@ -640,7 +644,7 @@ function buildMoveReview(games) {
         document.getElementById("reviewContent").style.display = "none";
         return;
     }
-    const parsed = loadedGames.map(g => parseGameForReview(g.pgn)).filter(Boolean);
+    const parsed = loadedGames.map(g => getParsedGameReview(g.pgn)).filter(Boolean);
     const totals = parsed.reduce((a, item) => {
         Object.keys(a).forEach(k => a[k] += item.totals[k]);
         return a;
@@ -678,7 +682,7 @@ function loadSelectedReview() {
     const index = Number(document.getElementById("reviewGame").value);
     const game = loadedGames[index];
     if (!game) return;
-    currentReview = parseGameForReview(game.pgn);
+    currentReview = getParsedGameReview(game.pgn);
     currentReviewPly = 0;
     if (!currentReview) {
         document.getElementById("reviewStatus").textContent =
@@ -800,7 +804,7 @@ function predictorStats(games) {
     const recentScore = recentScoreGames.reduce((s,g)=>s+g.score,0)/recentScoreGames.length;
     const patternRows = games.slice(-40).map(g => {
         if (!g.pgn) return null;
-        const review = parseGameForReview(g.pgn);
+        const review = getParsedGameReview(g.pgn);
         return review ? review.totals : null;
     });
     const parsedRows = patternRows.filter(Boolean);
@@ -926,7 +930,7 @@ function summarizeStretch(games) {
     const score = games.reduce((sum, g) => sum + g.score, 0) / games.length;
     const avgPlayer = average(games.map(g => g.playerRating));
     const avgOpponent = average(games.map(g => g.opponentRating));
-    const parsed = games.map(g => g.pgn ? parseGameForReview(g.pgn) : null).filter(Boolean);
+    const parsed = games.map(g => g.pgn ? getParsedGameReview(g.pgn) : null).filter(Boolean);
     const totals = parsed.reduce((sum, item) => {
         for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) {
             sum[key] += item.totals[key] || 0;
@@ -965,7 +969,7 @@ function buildStretchComparison(games) {
 
     const summaries = [];
     // Parse each game's PGN once, then reuse the parsed event totals for all candidate windows.
-    const parsedByGame = games.map(g => g.pgn ? parseGameForReview(g.pgn) : null);
+    const parsedByGame = games.map(g => g.pgn ? getParsedGameReview(g.pgn) : null);
     const makeSummary = (start, end) => {
         const sample = games.slice(start, end);
         const wins = sample.filter(g => g.result === "Win").length;
