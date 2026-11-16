@@ -304,17 +304,24 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 
     <div class="panel stretch-panel">
         <h2>Stretch Comparison</h2>
-        <p class="review-note">Compare your latest 23 rated games with an earlier 23-game stretch. ChessAnalyzer retrieves the games automatically from Chess.com's public game archives—no PGN pasting required.</p>
+        <p class="review-note">Choose any two stretches from the loaded games. Game numbers run oldest to newest. The ranges can be different lengths, but cannot overlap.</p>
         <div class="stretch-controls">
             <div>
-                <label for="stretchEarlier">Earlier stretch</label>
-                <select id="stretchEarlier" aria-label="Choose earlier 23-game stretch"></select>
+                <strong>Stretch A</strong>
+                <label for="stretchAStart">Start game</label>
+                <input id="stretchAStart" type="number" min="1" value="1">
+                <label for="stretchAEnd">End game</label>
+                <input id="stretchAEnd" type="number" min="1" value="23">
             </div>
             <div>
-                <label for="stretchRecent">Recent stretch</label>
-                <select id="stretchRecent" disabled><option>Most recent 23 games</option></select>
+                <strong>Stretch B</strong>
+                <label for="stretchBStart">Start game</label>
+                <input id="stretchBStart" type="number" min="1" value="78">
+                <label for="stretchBEnd">End game</label>
+                <input id="stretchBEnd" type="number" min="1" value="100">
             </div>
         </div>
+        <button id="compareStretchesBtn" type="button" onclick="compareSelectedStretches()">Compare stretches</button>
         <p id="stretchStatus" class="stretch-meta">Analyzing game stretches…</p>
         <div id="stretchResults" style="display:none">
             <div class="stretch-table-wrap">
@@ -920,107 +927,75 @@ async function predictMatchup() {
 }
 
 
-const STRETCH_SIZE = 23;
-let stretchWindows = [];
+let comparisonGames = [];
 
-function summarizeStretch(games) {
-    const wins = games.filter(g => g.result === "Win").length;
-    const draws = games.filter(g => g.result === "Draw").length;
-    const losses = games.length - wins - draws;
-    const score = games.reduce((sum, g) => sum + g.score, 0) / games.length;
-    const avgPlayer = average(games.map(g => g.playerRating));
-    const avgOpponent = average(games.map(g => g.opponentRating));
-    const parsed = games.map(g => g.pgn ? getParsedGameReview(g.pgn) : null).filter(Boolean);
+function makeStretchSummary(sample) {
+    const wins = sample.filter(g => g.result === "Win").length;
+    const draws = sample.filter(g => g.result === "Draw").length;
+    const losses = sample.length - wins - draws;
+    const parsed = sample.map(g => g.pgn ? getParsedGameReview(g.pgn) : null).filter(Boolean);
     const totals = parsed.reduce((sum, item) => {
-        for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) {
-            sum[key] += item.totals[key] || 0;
-        }
+        for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) sum[key] += item.totals[key] || 0;
         return sum;
-    }, { moves:0, checks:0, captures:0, exposed:0, castles:0, promotions:0 });
+    }, {moves:0,checks:0,captures:0,exposed:0,castles:0,promotions:0});
     const rate = key => totals.moves ? totals[key] / totals.moves * 20 : null;
     return {
-        games: games.length, wins, draws, losses, score,
-        performance: performanceRating(games),
-        avgPlayer, avgOpponent, parsed: parsed.length,
-        moves: totals.moves,
-        checks20: rate("checks"),
-        captures20: rate("captures"),
-        exposed20: rate("exposed"),
+        games: sample.length, wins, draws, losses,
+        score: sample.reduce((sum, g) => sum + g.score, 0) / sample.length,
+        performance: performanceRating(sample),
+        avgPlayer: average(sample.map(g => g.playerRating)),
+        avgOpponent: average(sample.map(g => g.opponentRating)),
+        parsed: parsed.length, moves: totals.moves,
+        checks20: rate("checks"), captures20: rate("captures"), exposed20: rate("exposed"),
         castlesPerGame: parsed.length ? totals.castles / parsed.length : null,
         promotionsPerGame: parsed.length ? totals.promotions / parsed.length : null,
-        start: games[0].date, end: games[games.length - 1].date
+        start: sample[0].date, end: sample[sample.length - 1].date
     };
-}
-
-function formatRate(value) {
-    return value === null ? "Unavailable" : value.toFixed(2);
 }
 
 function buildStretchComparison(games) {
+    comparisonGames = games;
     const status = document.getElementById("stretchStatus");
-    const results = document.getElementById("stretchResults");
-    const select = document.getElementById("stretchEarlier");
-    results.style.display = "none";
-    select.innerHTML = "";
-    if (games.length < STRETCH_SIZE * 2) {
-        status.textContent = "Need at least 46 rated games to compare two separate 23-game stretches. Found " + games.length + ".";
+    const max = games.length;
+    ["stretchAStart","stretchAEnd","stretchBStart","stretchBEnd"].forEach(id => {
+        const input = document.getElementById(id);
+        input.max = String(max);
+    });
+    const aStart = 1, aEnd = Math.min(23, max);
+    const bEnd = max, bStart = Math.max(aEnd + 1, max - 22);
+    document.getElementById("stretchAStart").value = aStart;
+    document.getElementById("stretchAEnd").value = aEnd;
+    document.getElementById("stretchBStart").value = bStart;
+    document.getElementById("stretchBEnd").value = bEnd;
+    if (max < 2) {
+        status.textContent = "At least two games are needed to compare non-overlapping stretches.";
+        document.getElementById("stretchResults").style.display = "none";
         return;
     }
+    status.textContent = "Loaded " + max + " games. Select the game-number ranges and compare.";
+    compareSelectedStretches();
+}
 
-    const summaries = [];
-    // Parse each game's PGN once, then reuse the parsed event totals for all candidate windows.
-    const parsedByGame = games.map(g => g.pgn ? getParsedGameReview(g.pgn) : null);
-    const makeSummary = (start, end) => {
-        const sample = games.slice(start, end);
-        const wins = sample.filter(g => g.result === "Win").length;
-        const draws = sample.filter(g => g.result === "Draw").length;
-        const losses = sample.length - wins - draws;
-        const base = {
-            games: sample.length, wins, draws, losses,
-            score: sample.reduce((sum, g) => sum + g.score, 0) / sample.length,
-            performance: performanceRating(sample),
-            avgPlayer: average(sample.map(g => g.playerRating)),
-            avgOpponent: average(sample.map(g => g.opponentRating)),
-            start: sample[0].date, end: sample[sample.length - 1].date
-        };
-        const parsed = parsedByGame.slice(start, end).filter(Boolean);
-        const totals = parsed.reduce((sum, item) => {
-            for (const key of ["moves", "checks", "captures", "exposed", "castles", "promotions"]) sum[key] += item.totals[key] || 0;
-            return sum;
-        }, {moves:0,checks:0,captures:0,exposed:0,castles:0,promotions:0});
-        base.parsed = parsed.length;
-        base.moves = totals.moves;
-        base.checks20 = totals.moves ? totals.checks / totals.moves * 20 : null;
-        base.captures20 = totals.moves ? totals.captures / totals.moves * 20 : null;
-        base.exposed20 = totals.moves ? totals.exposed / totals.moves * 20 : null;
-        base.castlesPerGame = parsed.length ? totals.castles / parsed.length : null;
-        base.promotionsPerGame = parsed.length ? totals.promotions / parsed.length : null;
-        return base;
-    };
-
-    const recentStart = games.length - STRETCH_SIZE;
-    const recent = makeSummary(recentStart, games.length);
-    for (let start = 0; start <= recentStart - STRETCH_SIZE; start++) {
-        const summary = makeSummary(start, start + STRETCH_SIZE);
-        summaries.push({start, end:start + STRETCH_SIZE, summary});
+function compareSelectedStretches() {
+    const status = document.getElementById("stretchStatus");
+    const values = ["stretchAStart","stretchAEnd","stretchBStart","stretchBEnd"].map(id =>
+        Number(document.getElementById(id).value));
+    const [aStart,aEnd,bStart,bEnd] = values;
+    const max = comparisonGames.length;
+    const valid = values.every(Number.isInteger) &&
+        aStart >= 1 && bStart >= 1 && aEnd <= max && bEnd <= max &&
+        aStart <= aEnd && bStart <= bEnd &&
+        (aEnd < bStart || bEnd < aStart);
+    if (!valid) {
+        status.textContent = "Invalid ranges. Use game numbers 1–" + max + ", make each start no later than its end, and ensure the stretches do not overlap.";
+        document.getElementById("stretchResults").style.display = "none";
+        return;
     }
-    // "Best earlier stretch" means the highest score percentage; performance rating breaks ties.
-    summaries.sort((a,b) => b.summary.score - a.summary.score || b.summary.performance - a.summary.performance);
-    stretchWindows = summaries;
-    summaries.forEach((item, index) => {
-        const option = document.createElement("option");
-        option.value = String(index);
-        const s = item.summary;
-        option.textContent = s.start.toLocaleDateString() + " – " + s.end.toLocaleDateString() +
-            " · " + s.wins + "W-" + s.draws + "D-" + s.losses + "L · " + (s.score*100).toFixed(1) + "%";
-        select.appendChild(option);
-    });
-    select.value = "0";
-    document.getElementById("stretchRecentLabel").textContent =
-        recent.start.toLocaleDateString() + " – " + recent.end.toLocaleDateString();
-    status.textContent = "Found " + summaries.length + " non-overlapping earlier windows. The default selection is your strongest earlier 23-game result stretch.";
-    renderStretchComparison(0, recent);
-    select.onchange = () => renderStretchComparison(Number(select.value), recent);
+    const earlier = makeStretchSummary(comparisonGames.slice(aStart - 1, aEnd));
+    const recent = makeStretchSummary(comparisonGames.slice(bStart - 1, bEnd));
+    renderStretchComparison(earlier, recent);
+    status.textContent = "Comparing games " + aStart + "–" + aEnd + " (" + earlier.games + " games) against " +
+        bStart + "–" + bEnd + " (" + recent.games + " games). Ranges do not overlap.";
 }
 
 function renderStretchComparison(index, recent) {
@@ -1028,8 +1003,8 @@ function renderStretchComparison(index, recent) {
     if (!earlierWindow) return;
     const earlier = earlierWindow.summary;
     const dateRange = s => s.start.toLocaleDateString() + " – " + s.end.toLocaleDateString();
-    document.getElementById("stretchEarlierLabel").textContent = dateRange(earlier);
-    document.getElementById("stretchRecentLabel").textContent = dateRange(recent);
+    document.getElementById("stretchEarlierLabel").textContent = "A · " + earlier.games + " games · " + dateRange(earlier);
+    document.getElementById("stretchRecentLabel").textContent = "B · " + recent.games + " games · " + dateRange(recent);
     const pct = x => (x * 100).toFixed(1) + "%";
     const rows = [
         ["Record", earlier.wins+"W-"+earlier.draws+"D-"+earlier.losses+"L", recent.wins+"W-"+recent.draws+"D-"+recent.losses+"L", null],
@@ -1037,7 +1012,7 @@ function renderStretchComparison(index, recent) {
         ["Performance rating (estimate)", Math.round(earlier.performance), Math.round(recent.performance), recent.performance-earlier.performance],
         ["Average player rating", Math.round(earlier.avgPlayer), Math.round(recent.avgPlayer), recent.avgPlayer-earlier.avgPlayer],
         ["Average opponent rating", Math.round(earlier.avgOpponent), Math.round(recent.avgOpponent), recent.avgOpponent-earlier.avgOpponent],
-        ["Games with parsed PGNs", earlier.parsed+"/23", recent.parsed+"/23", null],
+        ["Games with parsed PGNs", earlier.parsed+"/"+earlier.games, recent.parsed+"/"+recent.games, null],
         ["Checks per 20 half-moves", formatRate(earlier.checks20), formatRate(recent.checks20), earlier.checks20===null||recent.checks20===null?null:recent.checks20-earlier.checks20],
         ["Captures per 20 half-moves", formatRate(earlier.captures20), formatRate(recent.captures20), earlier.captures20===null||recent.captures20===null?null:recent.captures20-earlier.captures20],
         ["Pieces exposed per 20 half-moves", formatRate(earlier.exposed20), formatRate(recent.exposed20), earlier.exposed20===null||recent.exposed20===null?null:recent.exposed20-earlier.exposed20],
