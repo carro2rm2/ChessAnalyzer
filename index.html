@@ -135,6 +135,11 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 .stretch-table th:first-child, .stretch-table td:first-child { text-align:left; }
 .stretch-difference { font-weight:bold; }
 .stretch-interpretation { line-height:1.6; color:#d7e0e8; }
+.engine-controls { margin-top:16px; padding-top:14px; border-top:1px solid #344454; }
+.engine-status { color:#b8c7d5; font-size:13px; line-height:1.5; margin-top:10px; }
+.engine-progress { width:100%; height:10px; background:#101820; border-radius:8px; overflow:hidden; margin:10px 0; }
+.engine-progress span { display:block; height:100%; width:0; background:#65d6a3; transition:width .15s; }
+.engine-note { color:#aab7c4; font-size:12px; line-height:1.5; }
 .stretch-meta { color:#aab7c4; font-size:13px; line-height:1.5; }
 @media(max-width:550px) { .stretch-controls { grid-template-columns:1fr; } }
 
@@ -332,7 +337,21 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
             </div>
             <h3>What changed?</h3>
             <div id="stretchInterpretation" class="stretch-interpretation"></div>
-            <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. Checks are counted, not automatically treated as good or aggressive. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder. Engine accuracy and a full threat/fork-based aggressiveness score are not available in this version.</p>
+            <div class="engine-controls">
+                <h3>Engine-based move analysis</h3>
+                <p class="review-note">Analyze both players in the selected stretches. This uses Stockfish in your browser and runs only when requested.</p>
+                <button id="engineAnalyzeBtn" type="button" onclick="analyzeSelectedStretches()">Analyze accuracy, aggressiveness &amp; checks</button>
+                <div class="engine-progress"><span id="engineProgressBar"></span></div>
+                <p id="engineStatus" class="engine-status">Engine analysis has not been run. The first run downloads the small Stockfish engine.</p>
+                <div class="stretch-table-wrap" id="engineResultsWrap" style="display:none">
+                    <table class="stretch-table">
+                        <thead><tr><th>Measure</th><th>Stretch A · You</th><th>Stretch A · Opponents</th><th>Stretch B · You</th><th>Stretch B · Opponents</th></tr></thead>
+                        <tbody id="engineRows"></tbody>
+                    </table>
+                </div>
+                <p class="engine-note">Accuracy is an engine-estimated score based on centipawn loss, not Chess.com’s proprietary accuracy. Aggressiveness is a custom heuristic (points per move): it rewards captures, forward/central pawn play, moves toward the enemy king, and engine-confirmed initiative; checks earn credit only when the position improves. The check-success rate counts checks followed by at least a 0.5-pawn improvement for the checking side within the next three plies. Small samples and shallow engine depth can make these estimates noisy.</p>
+            </div>
+            <p class="stretch-meta">Move-pattern rates are normalized per 20 half-moves. “Exposed” means a moved piece was legally capturable immediately afterward; it is a review flag, not proof of a blunder.</p>
         </div>
     </div>
 
@@ -1080,6 +1099,224 @@ function renderStretchComparison(earlier, recent) {
         document.getElementById("stretchInterpretation").appendChild(p);
     });
     document.getElementById("stretchResults").style.display = "block";
+}
+
+
+let stockfishWorker = null;
+let stockfishReadyPromise = null;
+let stockfishCommandResolve = null;
+let stockfishLastScore = null;
+const stockfishEvalCache = new Map();
+const STOCKFISH_BASE = "https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/";
+
+function startStockfish() {
+    if (stockfishReadyPromise) return stockfishReadyPromise;
+    stockfishReadyPromise = new Promise((resolve, reject) => {
+        try {
+            const wrapper = "self.Module = { locateFile: function(path) { return '" + STOCKFISH_BASE + "' + path; } }; importScripts('" +
+                STOCKFISH_BASE + "stockfish-19-lite-single.js');";
+            const blobUrl = URL.createObjectURL(new Blob([wrapper], {type:"text/javascript"}));
+            stockfishWorker = new Worker(blobUrl);
+            stockfishWorker.onmessage = event => {
+                const line = String(event.data || "");
+                if (line.includes("uciok")) {
+                    stockfishWorker.postMessage("isready");
+                } else if (line.includes("readyok")) {
+                    resolve();
+                } else if (line.startsWith("info ")) {
+                    const cp = line.match(/ score cp (-?\d+)/);
+                    const mate = line.match(/ score mate (-?\d+)/);
+                    if (cp) stockfishLastScore = Number(cp[1]) / 100;
+                    else if (mate) stockfishLastScore = Number(mate[1]) > 0 ? 100 : -100;
+                } else if (line.startsWith("bestmove")) {
+                    if (stockfishCommandResolve) {
+                        const done = stockfishCommandResolve;
+                        stockfishCommandResolve = null;
+                        done(stockfishLastScore === null ? 0 : stockfishLastScore);
+                    }
+                }
+            };
+            stockfishWorker.onerror = error => reject(new Error("Stockfish could not start: " + (error.message || "worker error")));
+            stockfishWorker.postMessage("uci");
+        } catch (error) { reject(error); }
+    });
+    return stockfishReadyPromise;
+}
+
+async function evaluateFen(fen, depth) {
+    if (stockfishEvalCache.has(fen)) return stockfishEvalCache.get(fen);
+    await startStockfish();
+    const score = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            stockfishCommandResolve = null;
+            reject(new Error("Stockfish timed out while evaluating a position."));
+        }, 30000);
+        stockfishLastScore = null;
+        stockfishCommandResolve = value => { clearTimeout(timeout); resolve(value); };
+        stockfishWorker.postMessage("position fen " + fen);
+        stockfishWorker.postMessage("go depth " + depth);
+    });
+    stockfishEvalCache.set(fen, score);
+    return score;
+}
+
+function aggressionMovePoints(move, beforeFen, afterFen, evalGain, checkWorked, exposed) {
+    let points = 0;
+    if (move.captured) points += 1.5;
+    if (move.piece === "p") {
+        const rank = Number(move.to[1]);
+        const advanced = move.color === "w" ? rank >= 5 : rank <= 4;
+        if (advanced) points += 0.7;
+        if ("cdef".includes(move.to[0])) points += 0.5;
+    } else if (move.piece !== "k") {
+        const enemyKing = beforeFen.split(" ")[0].includes(move.color === "w" ? "k" : "K");
+        if (enemyKing) {
+            const board = beforeFen.split(" ")[0].split("/");
+            const kingChar = move.color === "w" ? "k" : "K";
+            let kingSquare = null;
+            for (let row=0; row<8; row++) {
+                let file=0;
+                for (const ch of board[row]) {
+                    if (/\d/.test(ch)) file += Number(ch);
+                    else {
+                        if (ch === kingChar) kingSquare = String.fromCharCode(97+file) + (8-row);
+                        file++;
+                    }
+                }
+            }
+            if (kingSquare) {
+                const dist = sq => Math.abs(sq.charCodeAt(0)-kingSquare.charCodeAt(0)) + Math.abs(Number(sq[1])-Number(kingSquare[1]));
+                if (dist(move.to) < dist(move.from)) points += 0.8;
+            }
+        }
+    }
+    if (evalGain >= 0.5) points += 1.5;
+    if (checkWorked) points += 2.0;
+    if (exposed) points -= 1.5;
+    return points;
+}
+
+async function analyzeStretchEngine(games, label, progress) {
+    const side = {you:{loss:0,accuracy:0,moves:0,aggression:0,checks:0,successfulChecks:0},
+                  opp:{loss:0,accuracy:0,moves:0,aggression:0,checks:0,successfulChecks:0}};
+    const eligibleGames = games.filter(g => g.pgn);
+    let totalPositions = 0;
+    const parsedGames = eligibleGames.map(g => ({game:g, review:getParsedGameReview(g.pgn)})).filter(x => x.review);
+    parsedGames.forEach(x => totalPositions += x.review.positions.length);
+    let done = 0;
+    for (const entry of parsedGames) {
+        const g = entry.game, review = entry.review, history = review.history, positions = review.positions;
+        const ownColor = g.color === "White" ? "w" : "b";
+        const evals = [];
+        for (let i=0; i<positions.length; i++) {
+            evals[i] = await evaluateFen(positions[i], 8);
+            done++;
+            progress(done, totalPositions, label);
+        }
+        for (let i=0; i<history.length; i++) {
+            const move = history[i];
+            const bucket = move.color === ownColor ? side.you : side.opp;
+            const pre = evals[i];
+            const afterForMover = -evals[i+1];
+            const loss = Math.max(0, pre - afterForMover);
+            const accuracy = 100 * Math.exp(-0.00368208 * Math.min(1000, loss * 100));
+            const gain = afterForMover - pre;
+            const detail = review.details[i];
+            const exposed = detail && detail.events.some(e => e.includes("can currently be captured"));
+            let checkWorked = false;
+            const isCheck = /[+#]$/.test(move.san);
+            if (isCheck) {
+                bucket.checks++;
+                if (i + 3 < evals.length) {
+                    const laterForChecker = -evals[i+3];
+                    checkWorked = laterForChecker - pre >= 0.5;
+                    if (checkWorked) bucket.successfulChecks++;
+                }
+            }
+            bucket.moves++;
+            bucket.loss += loss;
+            bucket.accuracy += accuracy;
+            bucket.aggression += aggressionMovePoints(move, positions[i], positions[i+1], gain, checkWorked, exposed);
+        }
+    }
+    return {
+        you: side.you.moves ? {
+            accuracy: side.you.accuracy / side.you.moves,
+            aggression: side.you.aggression / side.you.moves,
+            checkRate: side.you.checks ? side.you.successfulChecks / side.you.checks * 100 : null,
+            checks: side.you.checks, moves:side.you.moves
+        } : null,
+        opp: side.opp.moves ? {
+            accuracy: side.opp.accuracy / side.opp.moves,
+            aggression: side.opp.aggression / side.opp.moves,
+            checkRate: side.opp.checks ? side.opp.successfulChecks / side.opp.checks * 100 : null,
+            checks: side.opp.checks, moves:side.opp.moves
+        } : null,
+        games: parsedGames.length, requested:games.length
+    };
+}
+
+async function analyzeSelectedStretches() {
+    const button = document.getElementById("engineAnalyzeBtn");
+    const status = document.getElementById("engineStatus");
+    const bar = document.getElementById("engineProgressBar");
+    const [aStart,aEnd,bStart,bEnd] = ["stretchAStart","stretchAEnd","stretchBStart","stretchBEnd"]
+        .map(id => Number(document.getElementById(id).value));
+    const max = comparisonGames.length;
+    const valid = [aStart,aEnd,bStart,bEnd].every(Number.isInteger) &&
+        aStart >= 1 && bStart >= 1 && aEnd <= max && bEnd <= max &&
+        aStart <= aEnd && bStart <= bEnd && (aEnd < bStart || bEnd < aStart);
+    if (!valid) {
+        status.textContent = "Choose valid, non-overlapping ranges before running engine analysis.";
+        return;
+    }
+    const aGames = comparisonGames.slice(aStart-1,aEnd);
+    const bGames = comparisonGames.slice(bStart-1,bEnd);
+    button.disabled = true;
+    document.getElementById("engineResultsWrap").style.display = "none";
+    bar.style.width = "0%";
+    try {
+        status.textContent = "Starting Stockfish. The first run downloads approximately 1.7 MB plus the engine's supporting files.";
+        const a = await analyzeStretchEngine(aGames, "Stretch A", (done,total,label) => {
+            status.textContent = label + ": evaluating position " + done + " of " + total + "…";
+            bar.style.width = Math.round(done/Math.max(1,total)*50) + "%";
+        });
+        const b = await analyzeStretchEngine(bGames, "Stretch B", (done,total,label) => {
+            status.textContent = label + ": evaluating position " + done + " of " + total + "…";
+            bar.style.width = (50 + Math.round(done/Math.max(1,total)*50)) + "%";
+        });
+        const fmt = (v,suffix="") => v === null || !Number.isFinite(v) ? "—" : v.toFixed(1) + suffix;
+        const rows = [
+            ["Engine accuracy", fmt(a.you?.accuracy,"%"), fmt(a.opp?.accuracy,"%"), fmt(b.you?.accuracy,"%"), fmt(b.opp?.accuracy,"%")],
+            ["Aggressiveness index (points/move)", fmt(a.you?.aggression), fmt(a.opp?.aggression), fmt(b.you?.aggression), fmt(b.opp?.aggression)],
+            ["Checks creating advantage", a.you ? (a.you.checkRate===null?"—":fmt(a.you.checkRate,"%")+" ("+a.you.checks+" checks)") : "—",
+                a.opp ? (a.opp.checkRate===null?"—":fmt(a.opp.checkRate,"%")+" ("+a.opp.checks+" checks)") : "—",
+                b.you ? (b.you.checkRate===null?"—":fmt(b.you.checkRate,"%")+" ("+b.you.checks+" checks)") : "—",
+                b.opp ? (b.opp.checkRate===null?"—":fmt(b.opp.checkRate,"%")+" ("+b.opp.checks+" checks)") : "—"],
+            ["Moves analyzed", a.you?.moves || 0, a.opp?.moves || 0, b.you?.moves || 0, b.opp?.moves || 0],
+            ["Games with PGNs", a.games+"/"+a.requested, a.games+"/"+a.requested, b.games+"/"+b.requested, b.games+"/"+b.requested]
+        ];
+        const tbody = document.getElementById("engineRows");
+        tbody.innerHTML = "";
+        rows.forEach(row => {
+            const tr = document.createElement("tr");
+            row.forEach((value,i) => {
+                const td = document.createElement("td");
+                td.textContent = value;
+                if (i===0) td.style.fontWeight = "bold";
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        document.getElementById("engineResultsWrap").style.display = "block";
+        bar.style.width = "100%";
+        status.textContent = "Engine analysis complete. " + a.games + " games analyzed in A; " + b.games + " games analyzed in B. Results are cached for this page session.";
+    } catch (error) {
+        console.error(error);
+        status.textContent = "Engine analysis failed: " + error.message + " Refresh and try again; your existing game comparisons are unchanged.";
+    } finally {
+        button.disabled = false;
+    }
 }
 
 function displayResults(username, games, timeClass) {
