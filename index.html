@@ -190,6 +190,13 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
             <div class="probability"><strong id="probB">—</strong><small id="probBLabel">Player 2 win</small></div>
         </div>
         <div class="matchup-bars"><span id="barA" class="prob-a"></span><span id="barDraw" class="prob-d"></span><span id="barB" class="prob-b"></span></div>
+        <h3>100-game simulation</h3>
+        <p class="prediction-note">One illustrative run of 100 games, randomly sampled from the estimated outcome probabilities above. Run the prediction again for a new simulation.</p>
+        <div class="metrics">
+            <div class="metric"><small id="simWinsLabel">Player 1 wins</small><strong id="simWins">—</strong></div>
+            <div class="metric"><small>Draws</small><strong id="simDraws">—</strong></div>
+            <div class="metric"><small id="simLossesLabel">Player 2 wins</small><strong id="simLosses">—</strong></div>
+        </div>
         <p id="predictionSummary" class="prediction-note"></p>
         <h3>What is driving the prediction?</h3>
         <div style="overflow-x:auto">
@@ -1007,10 +1014,20 @@ async function predictMatchup() {
         const ratingGap = A.currentRating - B.currentRating;
         const empirical = empiricalOutcomeEstimate(gamesA, gamesB, ratingGap);
         const higherIsA = ratingGap >= 0;
-        const normalizedWinA = higherIsA ? empirical.higherWin : empirical.higherLoss;
-        const normalizedDraw = empirical.draw;
-        const normalizedWinB = higherIsA ? empirical.higherLoss : empirical.higherWin;
-        const pct = x => (x*100).toFixed(1)+"%";
+        let normalizedWinA = higherIsA ? empirical.higherWin : empirical.higherLoss;
+        let normalizedDraw = empirical.draw;
+        let normalizedWinB = higherIsA ? empirical.higherLoss : empirical.higherWin;
+        // Keep every outcome possible and visible, including extreme mismatches.
+        // A 0.1% floor is a modeling safeguard, not a claim of precise certainty.
+        const minimumOutcomeChance = 0.001;
+        normalizedWinA = Math.max(minimumOutcomeChance, normalizedWinA);
+        normalizedDraw = Math.max(minimumOutcomeChance, normalizedDraw);
+        normalizedWinB = Math.max(minimumOutcomeChance, normalizedWinB);
+        const probabilityTotal = normalizedWinA + normalizedDraw + normalizedWinB;
+        normalizedWinA /= probabilityTotal;
+        normalizedDraw /= probabilityTotal;
+        normalizedWinB /= probabilityTotal;
+        const pct = x => Math.max(0.1, x*100).toFixed(1)+"%";
         document.getElementById("probA").textContent=pct(normalizedWinA);
         document.getElementById("probDraw").textContent=pct(normalizedDraw);
         document.getElementById("probB").textContent=pct(normalizedWinB);
@@ -1021,7 +1038,22 @@ async function predictMatchup() {
         document.getElementById("barA").style.width=(normalizedWinA*100)+"%";
         document.getElementById("barDraw").style.width=(normalizedDraw*100)+"%";
         document.getElementById("barB").style.width=(normalizedWinB*100)+"%";
-        const favorite = difference === 0 ? "The matchup looks very even." : (difference>0 ? a+" is the model's favorite." : b+" is the model's favorite.");
+        // Monte Carlo sample of 100 games using the displayed probabilities.
+        const simulated = { winsA:0, draws:0, winsB:0 };
+        for (let game = 0; game < 100; game++) {
+            const roll = Math.random();
+            if (roll < normalizedWinA) simulated.winsA++;
+            else if (roll < normalizedWinA + normalizedDraw) simulated.draws++;
+            else simulated.winsB++;
+        }
+        document.getElementById("simWinsLabel").textContent = a+" wins";
+        document.getElementById("simWins").textContent = simulated.winsA+"/100";
+        document.getElementById("simDraws").textContent = simulated.draws+"/100";
+        document.getElementById("simLossesLabel").textContent = b+" wins";
+        document.getElementById("simLosses").textContent = simulated.winsB+"/100";
+        const favorite = Math.abs(normalizedWinA-normalizedWinB) < 0.01
+            ? "The matchup looks very even."
+            : (normalizedWinA > normalizedWinB ? a+" is the model's favorite." : b+" is the model's favorite.");
         document.getElementById("predictionHeadline").textContent=favorite;
         document.getElementById("predictionSummary").textContent =
             "Estimated long-run outcomes, based on " + empirical.sample + " closest rating-gap games drawn from " +
@@ -1048,7 +1080,7 @@ async function predictMatchup() {
         const tbody=document.getElementById("comparisonRows"); tbody.innerHTML="";
         rows.forEach(row=>{const tr=document.createElement("tr");row.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
         document.getElementById("predictionCaveat").textContent =
-            "Calibration note: these percentages are an estimate of repeated-game outcome frequencies, using each player's latest 100 rated games and the closest historical rating gaps (up to 50 games), blended with a 12-game Elo prior. A 70% estimate means the model expects roughly 70 wins per 100 comparable games—not a guarantee for one game. This is personalized empirical evidence, not yet proven calibrated across a large independent population. The strength score and move-pattern signals remain diagnostic context; the displayed outcome percentages currently use actual rating gaps and observed results. Checks are tracked but not rewarded by themselves; captures and exposed pieces are rough activity/safety clues.";
+            "The 100-game simulation is one random sample, so its counts will vary each time you run it; the percentages above are the underlying estimated long-run frequencies. A small 0.1% minimum is applied to each outcome to prevent impossible-looking 0.0% estimates, even in huge mismatches. Estimates use each player's latest 100 rated games and up to 50 closest historical rating-gap games, blended with a 12-game Elo prior. This is personalized evidence, not yet proven calibrated across a large independent population. Strength score and move-pattern signals remain diagnostic context; outcome estimates currently use actual rating gaps and observed results.";
         document.getElementById("predictorResults").style.display="block";
         status.textContent="Prediction complete. Compared "+A.n+" games for "+a+" and "+B.n+" games for "+b+".";
     } catch(error) {
