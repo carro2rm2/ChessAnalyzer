@@ -224,6 +224,26 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
     </div>
 
     <div class="panel">
+        <h2>Projected ceiling · Experimental</h2>
+        <div class="metrics">
+            <div class="metric">
+                <small>Projected ceiling</small>
+                <strong class="ceiling" id="projectedCeiling">—</strong>
+            </div>
+            <div class="metric">
+                <small>Upset wins</small>
+                <strong id="upsetWins">—</strong>
+            </div>
+            <div class="metric">
+                <small>Upset rating gap</small>
+                <strong id="upsetGap">—</strong>
+            </div>
+        </div>
+        <p id="projectedCeilingExplanation" class="muted"></p>
+        <p class="muted">Prototype only: this is a transparent heuristic, not a trained or validated prediction model. It uses the loaded game sample, compares early and recent performance, and gives extra credit for wins against higher-rated opponents. It should not be interpreted as a reliable forecast of a player's ultimate rating yet.</p>
+    </div>
+
+    <div class="panel">
         <h2>Performance trend</h2>
         <div class="metrics">
             <div class="metric">
@@ -506,6 +526,30 @@ function percentile(values, p) {
 
 function average(values) {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function projectedCeilingStats(games, currentCeiling) {
+    // First prototype: compare non-overlapping early/recent 20-game performances,
+    // then add a modest, capped signal for wins against higher-rated opponents.
+    const windowSize = Math.min(20, Math.floor(games.length / 2));
+    const early = windowSize ? games.slice(0, windowSize) : [];
+    const recent = windowSize ? games.slice(-windowSize) : [];
+    const earlyPerformance = early.length ? performanceRating(early) : null;
+    const recentPerformance = recent.length ? performanceRating(recent) : null;
+    const trend = earlyPerformance === null || recentPerformance === null
+        ? 0 : recentPerformance - earlyPerformance;
+    const upsetWins = games.filter(g => g.result === "Win" && g.opponentRating > g.playerRating);
+    const totalUpsetGap = upsetWins.reduce((sum,g) => sum + (g.opponentRating - g.playerRating), 0);
+    const averageUpsetGapPerGame = games.length ? totalUpsetGap / games.length : 0;
+    const trendContribution = Math.max(-40, Math.min(80, trend * 0.20));
+    const upsetBonus = Math.max(0, Math.min(40, averageUpsetGapPerGame * 0.50));
+    const projected = Math.round(currentCeiling + trendContribution + upsetBonus);
+    return {
+        projected, upsetWins:upsetWins.length,
+        averageUpsetGap:upsetWins.length ? Math.round(totalUpsetGap / upsetWins.length) : 0,
+        trend, trendContribution, upsetBonus, sample:games.length,
+        windowSize
+    };
 }
 
 async function analyzePlayer() {
@@ -1422,6 +1466,22 @@ function displayResults(username, games, timeClass) {
     document.getElementById("floor").textContent = Math.round(percentile(values, 0.20));
     document.getElementById("typical").textContent = Math.round(percentile(values, 0.50));
     document.getElementById("ceiling").textContent = Math.round(percentile(values, 0.80));
+
+    const currentCeiling = percentile(values, 0.80);
+    const projection = projectedCeilingStats(games, currentCeiling);
+    document.getElementById("projectedCeiling").textContent = projection.projected;
+    document.getElementById("upsetWins").textContent = projection.upsetWins;
+    document.getElementById("upsetGap").textContent = projection.upsetWins
+        ? "+" + projection.averageUpsetGap : "—";
+    document.getElementById("projectedCeilingExplanation").textContent =
+        "Based on " + projection.sample + " loaded games. Early-vs-recent performance (" +
+        projection.windowSize + "-game windows): " + signed(projection.trend) +
+        " points; trend adjustment: " + signed(projection.trendContribution) +
+        ". Higher-rated wins: " + projection.upsetWins +
+        "; average opponent rating advantage in those wins: " +
+        (projection.upsetWins ? "+" + projection.averageUpsetGap : "none") +
+        "; upset adjustment: +" + Math.round(projection.upsetBonus) +
+        ". This first-pass estimate adds the adjustments to the current consistency ceiling.";
 
     // Performance trend: compare five early windows with five recent windows.
     // At least 48 games ensures the underlying game periods do not overlap.
