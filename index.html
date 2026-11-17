@@ -240,7 +240,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
             </div>
         </div>
         <p id="projectedCeilingExplanation" class="muted"></p>
-        <p class="muted">Prototype only: this is a transparent heuristic, not a trained or validated prediction model. It uses the loaded game sample, compares early and recent performance, and gives extra credit for wins against higher-rated opponents. It should not be interpreted as a reliable forecast of a player's ultimate rating yet.</p>
+        <p class="muted">Experimental all-time estimate: uses every rated game in the available Chess.com archives, compares the earliest and latest career performance windows, and rewards wins against higher-rated opponents. This is still a transparent heuristic—not a trained or validated forecast of ultimate rating. The dashboard above continues to summarize your latest 100 games.</p>
     </div>
 
     <div class="panel">
@@ -528,27 +528,39 @@ function average(values) {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function projectedCeilingStats(games, currentCeiling) {
-    // First prototype: compare non-overlapping early/recent 20-game performances,
-    // then add a modest, capped signal for wins against higher-rated opponents.
-    const windowSize = Math.min(20, Math.floor(games.length / 2));
-    const early = windowSize ? games.slice(0, windowSize) : [];
-    const recent = windowSize ? games.slice(-windowSize) : [];
+function projectedCeilingStats(allTimeGames, observedCeiling) {
+    // Experimental career projection: use the full archived career, not just
+    // the latest 100 games. Compare the earliest and latest career performance
+    // windows, then add a capped signal from wins against higher-rated opponents.
+    const windowSize = Math.min(20, Math.floor(allTimeGames.length / 2));
+    const early = windowSize ? allTimeGames.slice(0, windowSize) : [];
+    const recent = windowSize ? allTimeGames.slice(-windowSize) : [];
     const earlyPerformance = early.length ? performanceRating(early) : null;
     const recentPerformance = recent.length ? performanceRating(recent) : null;
-    const trend = earlyPerformance === null || recentPerformance === null
+    const careerGrowth = earlyPerformance === null || recentPerformance === null
         ? 0 : recentPerformance - earlyPerformance;
-    const upsetWins = games.filter(g => g.result === "Win" && g.opponentRating > g.playerRating);
-    const totalUpsetGap = upsetWins.reduce((sum,g) => sum + (g.opponentRating - g.playerRating), 0);
-    const averageUpsetGapPerGame = games.length ? totalUpsetGap / games.length : 0;
-    const trendContribution = Math.max(-40, Math.min(80, trend * 0.20));
-    const upsetBonus = Math.max(0, Math.min(40, averageUpsetGapPerGame * 0.50));
-    const projected = Math.round(currentCeiling + trendContribution + upsetBonus);
+    const upsetWins = allTimeGames.filter(g =>
+        g.result === "Win" && g.opponentRating > g.playerRating
+    );
+    const totalUpsetGap = upsetWins.reduce(
+        (sum, g) => sum + (g.opponentRating - g.playerRating), 0
+    );
+    const averageUpsetGapPerGame = allTimeGames.length
+        ? totalUpsetGap / allTimeGames.length : 0;
+    // Only positive career growth adds projected headroom. The estimate cannot
+    // fall below the player's already-observed consistency ceiling.
+    const growthContribution = Math.max(0, Math.min(150, careerGrowth * 0.50));
+    const upsetBonus = Math.max(0, Math.min(60, averageUpsetGapPerGame * 0.75));
+    const projected = Math.round(Math.max(observedCeiling, recentPerformance || 0) +
+        growthContribution + upsetBonus);
     return {
-        projected, upsetWins:upsetWins.length,
-        averageUpsetGap:upsetWins.length ? Math.round(totalUpsetGap / upsetWins.length) : 0,
-        trend, trendContribution, upsetBonus, sample:games.length,
-        windowSize
+        projected, upsetWins: upsetWins.length,
+        averageUpsetGap: upsetWins.length
+            ? Math.round(totalUpsetGap / upsetWins.length) : 0,
+        careerGrowth, growthContribution, upsetBonus,
+        sample: allTimeGames.length, windowSize,
+        firstDate: allTimeGames[0].date,
+        lastDate: allTimeGames[allTimeGames.length - 1].date
     };
 }
 
@@ -575,12 +587,12 @@ async function analyzePlayer() {
         const archives = (archiveData.archives || []).slice().reverse();
         if (!archives.length) throw new Error("No game archives were found for this player.");
 
-        let games = [];
+        let allTimeGames = [];
 
-        for (let i = 0; i < archives.length && games.length < GAME_LIMIT; i += 3) {
-            setStatus("Downloading " + timeClassName.toLowerCase() + " game history... " +
-                Math.min(i + 3, archives.length) + " of " + archives.length +
-                " archive months checked.");
+        for (let i = 0; i < archives.length; i += 3) {
+            setStatus("Downloading full " + timeClassName.toLowerCase() +
+                " career history... " + Math.min(i + 3, archives.length) +
+                " of " + archives.length + " archive months checked.");
 
             const batch = archives.slice(i, i + 3);
             const batchResults = await Promise.all(batch.map(async url => {
@@ -595,22 +607,25 @@ async function analyzePlayer() {
             for (const monthGames of batchResults) {
                 for (const game of monthGames) {
                     const converted = convertGame(game, username, timeClass);
-                    if (converted) games.push(converted);
+                    if (converted) allTimeGames.push(converted);
                 }
             }
         }
 
-        games.sort((a, b) => a.timestamp - b.timestamp);
-        games = games.slice(-GAME_LIMIT);
+        allTimeGames.sort((a, b) => a.timestamp - b.timestamp);
 
-        if (!games.length) {
+        if (!allTimeGames.length) {
             throw new Error("No rated " + timeClassName.toLowerCase() +
                 " games were found for this player. Try another time control.");
         }
 
-        displayResults(usernameInput, games, timeClass);
-        setStatus("Analysis complete. Found " + games.length + " rated " +
-            timeClassName.toLowerCase() + " games.");
+        // Keep the main dashboard responsive and focused on recent play, while
+        // passing the complete career history to the projected-ceiling model.
+        const recentGames = allTimeGames.slice(-GAME_LIMIT);
+        displayResults(usernameInput, recentGames, timeClass, allTimeGames);
+        setStatus("Analysis complete. Found " + allTimeGames.length + " all-time rated " +
+            timeClassName.toLowerCase() + " games; dashboard shows the latest " +
+            recentGames.length + ".");
     } catch (error) {
         console.error(error);
         setStatus(error.message || "Something went wrong. Please try again.", true);
@@ -1437,7 +1452,7 @@ function renderPgnPatternComparison(aGames, bGames) {
         "No external engine or additional download is required.";
 }
 
-function displayResults(username, games, timeClass) {
+function displayResults(username, games, timeClass, allTimeGames = games) {
     const wins = games.filter(g => g.result === "Win").length;
     const draws = games.filter(g => g.result === "Draw").length;
     const losses = games.filter(g => g.result === "Loss").length;
@@ -1459,7 +1474,7 @@ function displayResults(username, games, timeClass) {
         : " Performance range uses rolling 20-game windows.";
 
     document.getElementById("gameCount").textContent =
-        "Based on " + games.length + " recent rated " + timeClassName.toLowerCase() +
+        "Dashboard based on the latest " + games.length + " rated " + timeClassName.toLowerCase() +
         " games · " + games[0].date.toLocaleDateString() + " to " +
         games[games.length - 1].date.toLocaleDateString() + "." + windowNote;
 
@@ -1468,20 +1483,22 @@ function displayResults(username, games, timeClass) {
     document.getElementById("ceiling").textContent = Math.round(percentile(values, 0.80));
 
     const currentCeiling = percentile(values, 0.80);
-    const projection = projectedCeilingStats(games, currentCeiling);
+    const projection = projectedCeilingStats(allTimeGames, currentCeiling);
     document.getElementById("projectedCeiling").textContent = projection.projected;
     document.getElementById("upsetWins").textContent = projection.upsetWins;
     document.getElementById("upsetGap").textContent = projection.upsetWins
         ? "+" + projection.averageUpsetGap : "—";
     document.getElementById("projectedCeilingExplanation").textContent =
-        "Based on " + projection.sample + " loaded games. Early-vs-recent performance (" +
-        projection.windowSize + "-game windows): " + signed(projection.trend) +
-        " points; trend adjustment: " + signed(projection.trendContribution) +
-        ". Higher-rated wins: " + projection.upsetWins +
-        "; average opponent rating advantage in those wins: " +
+        "Career sample: " + projection.sample + " rated games from " +
+        projection.firstDate.toLocaleDateString() + " to " +
+        projection.lastDate.toLocaleDateString() + ". Comparing the first and last " +
+        projection.windowSize + "-game performance windows gives career growth of " +
+        signed(projection.careerGrowth) + " points; projected growth contribution: +" +
+        Math.round(projection.growthContribution) + ". Higher-rated wins across the full career: " +
+        projection.upsetWins + "; average opponent rating advantage in those wins: " +
         (projection.upsetWins ? "+" + projection.averageUpsetGap : "none") +
-        "; upset adjustment: +" + Math.round(projection.upsetBonus) +
-        ". This first-pass estimate adds the adjustments to the current consistency ceiling.";
+        "; upset contribution: +" + Math.round(projection.upsetBonus) +
+        ". The estimate is based on the full archived career and cannot be lower than the observed consistency ceiling.";
 
     // Performance trend: compare five early windows with five recent windows.
     // At least 48 games ensures the underlying game periods do not overlap.
