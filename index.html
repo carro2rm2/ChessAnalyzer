@@ -171,7 +171,7 @@ footer { text-align: center; color: #8293a3; font-size: 12px; margin: 25px 0; }
 
 <div class="panel predictor-panel">
     <h2>Head-to-head predictor</h2>
-    <p class="review-note">Compare two public Chess.com players and estimate the chance of a win or draw using recent performance, consistency, trends, and observable move patterns.</p>
+    <p class="review-note">Estimate how often each player would win across many comparable games. Percentages use the two players’ recent game results against opponents with similar rating gaps, blended with an Elo baseline. This is an empirical estimate, not yet a population-validated forecast.</p>
     <div class="matchup-inputs">
         <div><label for="predictorA">Player 1 username</label><input id="predictorA" value="rmcarroll604" placeholder="Chess.com username"></div>
         <div><label for="predictorB">Player 2 username</label><input id="predictorB" placeholder="Opponent username"></div>
@@ -931,6 +931,56 @@ function predictorStats(games) {
 
 function signed(value) { return (value > 0 ? "+" : "") + Math.round(value); }
 
+// Estimate outcome frequencies from the two players' own recent games.
+// Historical games are oriented from the higher-rated player's perspective,
+// then the nearest rating-gap matches are weighted more heavily.
+function empiricalOutcomeEstimate(gamesA, gamesB, ratingGapA) {
+    const history = [...gamesA, ...gamesB].map(g => {
+        const gap = Math.abs(g.playerRating - g.opponentRating);
+        const higherRatedScore = g.playerRating >= g.opponentRating ? g.score : 1 - g.score;
+        return { gap, score: higherRatedScore };
+    }).filter(g => Number.isFinite(g.gap) && Number.isFinite(g.score));
+
+    const targetGap = Math.abs(ratingGapA);
+    const nearest = history.slice().sort((x,y) =>
+        Math.abs(x.gap-targetGap) - Math.abs(y.gap-targetGap)
+    ).slice(0, Math.min(50, history.length));
+
+    // Elo supplies a stabilizing prior so a small sample cannot produce
+    // extreme percentages. The recent observed games gradually outweigh it.
+    const expectedHigherScore = 1 / (1 + Math.pow(10, -targetGap / 400));
+    const priorDraw = Math.min(0.25 * Math.exp(-targetGap / 500),
+        2 * Math.min(expectedHigherScore, 1 - expectedHigherScore));
+    const priorWin = expectedHigherScore - priorDraw / 2;
+    const priorLoss = 1 - expectedHigherScore - priorDraw / 2;
+    const priorWeight = 12;
+    let winWeight = priorWin * priorWeight;
+    let drawWeight = priorDraw * priorWeight;
+    let lossWeight = priorLoss * priorWeight;
+    let observedWeight = 0;
+
+    // A 100-point bandwidth gives nearby rating gaps meaningful influence,
+    // while still allowing a useful sample from a modest personal history.
+    const bandwidth = 100;
+    nearest.forEach(g => {
+        const distance = (g.gap - targetGap) / bandwidth;
+        const weight = Math.exp(-0.5 * distance * distance);
+        observedWeight += weight;
+        if (g.score === 1) winWeight += weight;
+        else if (g.score === 0.5) drawWeight += weight;
+        else lossWeight += weight;
+    });
+    const total = winWeight + drawWeight + lossWeight;
+    return {
+        higherWin: winWeight / total,
+        draw: drawWeight / total,
+        higherLoss: lossWeight / total,
+        sample: nearest.length,
+        effectiveSample: observedWeight,
+        historyCount: history.length
+    };
+}
+
 async function predictMatchup() {
     const a = document.getElementById("predictorA").value.trim();
     const b = document.getElementById("predictorB").value.trim();
@@ -952,23 +1002,14 @@ async function predictMatchup() {
         status.textContent = "Comparing performance and move patterns...";
         const A = predictorStats(gamesA), B = predictorStats(gamesB);
         const difference = A.strength - B.strength;
-        // Elo expected score represents win probability + half the draw probability.
-        // Limit the draw estimate so neither player's win probability can go below zero.
-        const expectedScoreA = 1 / (1 + Math.pow(10,-difference/400));
-        const rawDraw = .25 * Math.exp(-Math.abs(difference)/500);
-        const maxValidDraw = 2 * Math.min(expectedScoreA, 1 - expectedScoreA);
-        const draw = Math.max(0, Math.min(rawDraw, maxValidDraw, 1));
-        let winA = expectedScoreA - draw / 2;
-        let winB = (1 - expectedScoreA) - draw / 2;
-        // Keep a small upset chance for both players, even in extreme mismatches.
-        // Normalize afterward so all three outcomes still total exactly 100%.
-        const minimumWinChance = 0.001; // 0.1%
-        winA = Math.max(minimumWinChance, winA);
-        winB = Math.max(minimumWinChance, winB);
-        const probabilityTotal = winA + draw + winB;
-        const normalizedWinA = winA / probabilityTotal;
-        const normalizedDraw = draw / probabilityTotal;
-        const normalizedWinB = winB / probabilityTotal;
+        // Use actual recent outcomes from both players' archives at similar
+        // rating gaps, with an Elo prior to reduce small-sample volatility.
+        const ratingGap = A.currentRating - B.currentRating;
+        const empirical = empiricalOutcomeEstimate(gamesA, gamesB, ratingGap);
+        const higherIsA = ratingGap >= 0;
+        const normalizedWinA = higherIsA ? empirical.higherWin : empirical.higherLoss;
+        const normalizedDraw = empirical.draw;
+        const normalizedWinB = higherIsA ? empirical.higherLoss : empirical.higherWin;
         const pct = x => (x*100).toFixed(1)+"%";
         document.getElementById("probA").textContent=pct(normalizedWinA);
         document.getElementById("probDraw").textContent=pct(normalizedDraw);
@@ -983,8 +1024,13 @@ async function predictMatchup() {
         const favorite = difference === 0 ? "The matchup looks very even." : (difference>0 ? a+" is the model's favorite." : b+" is the model's favorite.");
         document.getElementById("predictionHeadline").textContent=favorite;
         document.getElementById("predictionSummary").textContent =
-            "Estimated strength difference: "+signed(difference)+" points in favor of "+(difference>=0?a:b)+
-            ". This is a first-pass statistical estimate, not a calibrated result from a large database of head-to-head games.";
+            "Estimated long-run outcomes, based on " + empirical.sample + " closest rating-gap games drawn from " +
+            empirical.historyCount + " recent games in the two profiles: " +
+            (higherIsA ? a : b) + " (higher-rated) wins " + pct(empirical.higherWin) +
+            ", draws " + pct(empirical.draw) + ", and loses " + pct(empirical.higherLoss) +
+            ". The estimate blends those observed outcomes with a 12-game Elo prior. Effective observed sample weight: " +
+            empirical.effectiveSample.toFixed(1) + ". Strength-score difference: " + signed(difference) +
+            " points (shown for context; the outcome estimate is currently anchored to actual rating gap).";
         const rows = [
             ["Games in sample",A.n,B.n],
             ["Latest playing rating",A.currentRating,B.currentRating],
@@ -1002,7 +1048,7 @@ async function predictMatchup() {
         const tbody=document.getElementById("comparisonRows"); tbody.innerHTML="";
         rows.forEach(row=>{const tr=document.createElement("tr");row.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});tbody.appendChild(tr);});
         document.getElementById("predictionCaveat").textContent =
-            "How to read the move-pattern signals: checks are tracked but are not rewarded by themselves; captures and pieces exposed to capture are only rough activity/safety clues. The current site cannot measure engine accuracy, missed wins, or move quality in difficult positions. Those should be added only when reliable position analysis is available. More games and parsed PGNs make the comparison more informative.";
+            "Calibration note: these percentages are an estimate of repeated-game outcome frequencies, using each player's latest 100 rated games and the closest historical rating gaps (up to 50 games), blended with a 12-game Elo prior. A 70% estimate means the model expects roughly 70 wins per 100 comparable games—not a guarantee for one game. This is personalized empirical evidence, not yet proven calibrated across a large independent population. The strength score and move-pattern signals remain diagnostic context; the displayed outcome percentages currently use actual rating gaps and observed results. Checks are tracked but not rewarded by themselves; captures and exposed pieces are rough activity/safety clues.";
         document.getElementById("predictorResults").style.display="block";
         status.textContent="Prediction complete. Compared "+A.n+" games for "+a+" and "+B.n+" games for "+b+".";
     } catch(error) {
